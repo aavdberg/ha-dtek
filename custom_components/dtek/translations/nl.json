@@ -60,6 +60,12 @@
     "binary_sensor": {
       "power_expected": {
         "name": "Stroom verwacht"
+      },
+      "outage_active": {
+        "name": "Stroomstoring actief"
+      },
+      "planned_maintenance": {
+        "name": "Gepland onderhoud actief"
       }
     },
     "sensor": {
@@ -77,6 +83,24 @@
       },
       "balance": {
         "name": "Accountsaldo"
+      },
+      "customer_name": {
+        "name": "Klantnaam"
+      },
+      "eic": {
+        "name": "EIC-code"
+      },
+      "meter_serial": {
+        "name": "Meternummer"
+      },
+      "meter_type": {
+        "name": "Metertype"
+      },
+      "day_reading": {
+        "name": "Dagstand meter"
+      },
+      "night_reading": {
+        "name": "Nachtstand meter"
       }
     },
     "calendar": {

@@ -21,6 +21,7 @@ from .endpoints import (
     METHOD_GET_STREETS,
     PATH_CABINET_AUTH_PERSON,
     PATH_CABINET_BALANCE,
+    PATH_CABINET_OBJECTS_INFO,
     PATH_CABINET_POWERTRACK,
     SHUTDOWNS_PATH,
 )
@@ -444,6 +445,7 @@ class DtekApiClient:
 
         primary_account = accounts[0] if accounts else None
         primary_eic = eic_codes[0] if eic_codes else None
+        customer_name = user_data.get("name") if isinstance(user_data, dict) else None
 
         return DtekCabinetUser(
             token=token,
@@ -452,7 +454,40 @@ class DtekApiClient:
             eic_codes=eic_codes,
             primary_account=primary_account,
             primary_eic=primary_eic,
+            customer_name=customer_name,
         )
+
+    async def async_get_cabinet_objects_info(
+        self,
+        token: str,
+        account: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Fetch registered objects, meters, and address info from cabinet."""
+        url = f"{self._cabinet_base_url}{PATH_CABINET_OBJECTS_INFO}"
+        payload: dict[str, Any] = {"token": token}
+        if account:
+            payload["account"] = account
+
+        headers = {
+            "User-Agent": DEFAULT_USER_AGENT,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        try:
+            async with self._session.post(
+                url, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=20)
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json(content_type=None)
+                    if isinstance(data, dict):
+                        objects = data.get("objects") or data.get("data")
+                        if isinstance(objects, list):
+                            return objects
+                    elif isinstance(data, list):
+                        return data
+        except Exception as err:
+            _LOGGER.debug("Could not fetch cabinet objects info: %s", err)
+        return []
 
     async def async_get_cabinet_powertrack_schedule(
         self,

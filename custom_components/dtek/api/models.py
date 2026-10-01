@@ -62,6 +62,12 @@ class DtekCabinetUser:
     eic_codes: list[str] = field(default_factory=list)
     primary_account: str | None = None
     primary_eic: str | None = None
+    customer_name: str | None = None
+    city: str | None = None
+    street: str | None = None
+    house_number: str | None = None
+    meter_serial: str | None = None
+    meter_type: str | None = None
 
 
 @dataclass(slots=True)
@@ -76,5 +82,11 @@ class DtekState:
     last_updated: datetime = field(default_factory=datetime.now)
     flags: dict[str, bool] = field(default_factory=dict)
     balance: float | None = None
-    meter_reading: float | None = None
+    day_reading: float | None = None
+    night_reading: float | None = None
+    customer_name: str | None = None
+    eic: str | None = None
+    meter_serial: str | None = None
+    meter_type: str | None = None
+    contract_capacity: str | None = None
     cabinet_authenticated: bool = False

@@ -69,6 +69,44 @@ SENSOR_DESCRIPTIONS: tuple[DtekSensorEntityDescription, ...] = (
         native_unit_of_measurement="UAH",
         value_fn=lambda state: state.balance,
     ),
+    DtekSensorEntityDescription(
+        key="customer_name",
+        translation_key="customer_name",
+        icon="mdi:account",
+        value_fn=lambda state: state.customer_name,
+    ),
+    DtekSensorEntityDescription(
+        key="eic",
+        translation_key="eic",
+        icon="mdi:identifier",
+        value_fn=lambda state: state.eic,
+    ),
+    DtekSensorEntityDescription(
+        key="meter_serial",
+        translation_key="meter_serial",
+        icon="mdi:counter",
+        value_fn=lambda state: state.meter_serial,
+    ),
+    DtekSensorEntityDescription(
+        key="meter_type",
+        translation_key="meter_type",
+        icon="mdi:information",
+        value_fn=lambda state: state.meter_type,
+    ),
+    DtekSensorEntityDescription(
+        key="day_reading",
+        translation_key="day_reading",
+        icon="mdi:white-balance-sunny",
+        native_unit_of_measurement="kWh",
+        value_fn=lambda state: state.day_reading,
+    ),
+    DtekSensorEntityDescription(
+        key="night_reading",
+        translation_key="night_reading",
+        icon="mdi:weather-night",
+        native_unit_of_measurement="kWh",
+        value_fn=lambda state: state.night_reading,
+    ),
 )
 
 
@@ -79,6 +117,8 @@ async def async_setup_entry(
 ) -> None:
     """Set up DTEK sensor entities."""
     coordinator = entry.runtime_data.coordinator
+    account = entry.runtime_data.account
+    group = entry.runtime_data.group
 
     async_add_entities(
         [
@@ -86,7 +126,8 @@ async def async_setup_entry(
                 coordinator=coordinator,
                 description=description,
                 entry_id=entry.entry_id,
-                group=entry.runtime_data.group,
+                group=group,
+                account=account,
             )
             for description in SENSOR_DESCRIPTIONS
         ]
@@ -104,15 +145,18 @@ class DtekSensor(CoordinatorEntity[DtekDataUpdateCoordinator], SensorEntity):
         description: DtekSensorEntityDescription,
         entry_id: str,
         group: str,
+        account: str | None = None,
     ) -> None:
         """Initialize the sensor."""
         super().__init__(coordinator)
         self.entity_description = description
         self._attr_unique_id = f"{entry_id}_{description.key}"
         self._attr_has_entity_name = True
+
+        device_name = f"DTEK Account {account}" if account else f"DTEK Grid ({group})"
         self._attr_device_info = {
             "identifiers": {(DOMAIN, entry_id)},
-            "name": f"DTEK Grid ({group})",
+            "name": device_name,
             "manufacturer": MANUFACTURER,
             "model": f"Queue {group}",
         }

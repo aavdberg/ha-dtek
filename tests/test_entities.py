@@ -9,8 +9,10 @@ import pytest
 
 from custom_components.dtek.api.models import DtekOutageEvent, DtekState
 from custom_components.dtek.binary_sensor import (
+    OUTAGE_ACTIVE_DESCRIPTION,
+    PLANNED_MAINTENANCE_DESCRIPTION,
     POWER_EXPECTED_DESCRIPTION,
-    DtekPowerExpectedBinarySensor,
+    DtekBinarySensor,
 )
 from custom_components.dtek.calendar import DtekOutageCalendarEntity
 from custom_components.dtek.sensor import SENSOR_DESCRIPTIONS, DtekSensor
@@ -21,11 +23,12 @@ def test_power_expected_binary_sensor() -> None:
     coordinator = MagicMock()
     coordinator.data = DtekState(group="GPV1.2", power_expected=True)
 
-    binary_sensor = DtekPowerExpectedBinarySensor(
+    binary_sensor = DtekBinarySensor(
         coordinator=coordinator,
         description=POWER_EXPECTED_DESCRIPTION,
         entry_id="test_entry",
         group="GPV1.2",
+        is_on_fn=lambda s: s.power_expected,
     )
 
     assert binary_sensor.is_on is True
@@ -34,6 +37,26 @@ def test_power_expected_binary_sensor() -> None:
     # Outage active
     coordinator.data = DtekState(group="GPV1.2", power_expected=False)
     assert binary_sensor.is_on is False
+
+    # Outage active sensor
+    active_sensor = DtekBinarySensor(
+        coordinator=coordinator,
+        description=OUTAGE_ACTIVE_DESCRIPTION,
+        entry_id="test_entry",
+        group="GPV1.2",
+        is_on_fn=lambda s: not s.power_expected,
+    )
+    assert active_sensor.is_on is True
+
+    # Planned maintenance sensor
+    maint_sensor = DtekBinarySensor(
+        coordinator=coordinator,
+        description=PLANNED_MAINTENANCE_DESCRIPTION,
+        entry_id="test_entry",
+        group="GPV1.2",
+        is_on_fn=lambda s: s.current_outage is not None and s.current_outage.outage_type == "planned",
+    )
+    assert maint_sensor.is_on is False
 
 
 def test_dtek_sensors() -> None:
@@ -66,6 +89,10 @@ def test_dtek_sensors() -> None:
     assert sensors["next_outage"].native_value == next_outage.start
     assert sensors["restore_time"].native_value is None
     assert sensors["outage_reason"].native_value == "Substation maintenance"
+    assert sensors["balance"].native_value is None
+    assert sensors["customer_name"].native_value is None
+    assert sensors["eic"].native_value is None
+    assert sensors["meter_serial"].native_value is None
 
 
 @pytest.mark.asyncio

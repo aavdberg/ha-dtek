@@ -60,6 +60,12 @@
     "binary_sensor": {
       "power_expected": {
         "name": "Power expected"
+      },
+      "outage_active": {
+        "name": "Outage active"
+      },
+      "planned_maintenance": {
+        "name": "Planned maintenance active"
       }
     },
     "sensor": {
@@ -77,6 +83,24 @@
       },
       "balance": {
         "name": "Account balance"
+      },
+      "customer_name": {
+        "name": "Customer name"
+      },
+      "eic": {
+        "name": "EIC code"
+      },
+      "meter_serial": {
+        "name": "Meter serial number"
+      },
+      "meter_type": {
+        "name": "Meter type"
+      },
+      "day_reading": {
+        "name": "Day meter reading"
+      },
+      "night_reading": {
+        "name": "Night meter reading"
       }
     },
     "calendar": {

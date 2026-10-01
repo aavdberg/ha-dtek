@@ -79,10 +79,10 @@ class DtekConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         schema = vol.Schema(
             {
                 vol.Required(CONF_DSO, default=DEFAULT_DSO): vol.In(dso_options),
-                vol.Required(CONF_SETUP_MODE, default=SETUP_MODE_ADDRESS): vol.In(
+                vol.Required(CONF_SETUP_MODE, default=SETUP_MODE_CABINET): vol.In(
                     {
+                        SETUP_MODE_CABINET: "Personal Cabinet (ok.dtek) login [Recommended]",
                         SETUP_MODE_ADDRESS: "Automatic address lookup",
-                        SETUP_MODE_CABINET: "Personal Cabinet (ok.dtek) login",
                         SETUP_MODE_MANUAL: "Manual group/queue entry",
                     }
                 ),
@@ -212,12 +212,26 @@ class DtekConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     if isinstance(sched, dict) and sched.get("data", {}).get("gpv"):
                         group = str(sched["data"]["gpv"])
 
+                # Auto-detect address details from cabinet objects if available
+                objects = await client.async_get_cabinet_objects_info(
+                    token=user.token,
+                    account=account,
+                )
+                city = None
+                street = None
+                house = None
+                if objects and isinstance(objects, list):
+                    first_obj = objects[0]
+                    if isinstance(first_obj, dict):
+                        city = first_obj.get("city")
+                        street = first_obj.get("street")
+                        house = first_obj.get("house") or first_obj.get("house_num")
+
                 unique_id = f"{self._dso}_cabinet_{account}".lower()
                 await self.async_set_unique_id(unique_id)
                 self._abort_if_unique_id_configured()
 
-                dso_name = SUPPORTED_DSOS[self._dso]["name"].split(" (")[0]
-                title = f"DTEK {dso_name} ({account})"
+                title = f"DTEK Account {account}"
 
                 return self.async_create_entry(
                     title=title,
@@ -228,6 +242,9 @@ class DtekConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         CONF_ACCOUNT: account,
                         CONF_EIC: eic,
                         CONF_GROUP: group,
+                        CONF_CITY: city,
+                        CONF_STREET: street,
+                        CONF_HOUSE_NUMBER: house,
                     },
                 )
             except DtekAuthError:

@@ -108,6 +108,16 @@ async def test_coordinator_cabinet_balance_update() -> None:
     client = MagicMock()
     client.async_get_schedule = AsyncMock(return_value=[])
     client.async_get_cabinet_balance = AsyncMock(return_value=-42.50)
+    client.async_get_cabinet_objects_info = AsyncMock(
+        return_value=[
+            {
+                "customer_name": "Іван Іванов",
+                "eic": "62Z1234567890123",
+                "meter_serial": "987654",
+                "meter_type": "MTX 1A",
+            }
+        ]
+    )
 
     coordinator = DtekDataUpdateCoordinator(
         hass=hass,
@@ -120,4 +130,8 @@ async def test_coordinator_cabinet_balance_update() -> None:
     state = await coordinator._async_update_data()
 
     assert state.balance == -42.50
+    assert state.customer_name == "Іван Іванов"
+    assert state.eic == "62Z1234567890123"
+    assert state.meter_serial == "987654"
+    assert state.meter_type == "MTX 1A"
     assert state.cabinet_authenticated is True

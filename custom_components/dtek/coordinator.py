@@ -106,11 +106,28 @@ class DtekDataUpdateCoordinator(DataUpdateCoordinator[DtekState]):
 
             # Cabinet enrichment (if credentials provided)
             balance = None
+            customer_name = None
+            eic = self.cabinet_eic
+            meter_serial = None
+            meter_type = None
+
             if self.cabinet_token and self.cabinet_account:
                 balance = await self.client.async_get_cabinet_balance(
                     token=self.cabinet_token,
                     account=self.cabinet_account,
                 )
+                objects = await self.client.async_get_cabinet_objects_info(
+                    token=self.cabinet_token,
+                    account=self.cabinet_account,
+                )
+                if objects and isinstance(objects, list):
+                    first_obj = objects[0]
+                    if isinstance(first_obj, dict):
+                        customer_name = first_obj.get("customer_name") or first_obj.get("name")
+                        if not eic:
+                            eic = first_obj.get("eic")
+                        meter_serial = first_obj.get("meter_serial") or first_obj.get("meter")
+                        meter_type = first_obj.get("meter_type")
 
             return DtekState(
                 group=self.group,
@@ -121,6 +138,10 @@ class DtekDataUpdateCoordinator(DataUpdateCoordinator[DtekState]):
                 last_updated=now,
                 flags=flags,
                 balance=balance,
+                customer_name=customer_name,
+                eic=eic,
+                meter_serial=meter_serial,
+                meter_type=meter_type,
                 cabinet_authenticated=bool(self.cabinet_token),
             )
 

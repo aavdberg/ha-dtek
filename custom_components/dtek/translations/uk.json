@@ -60,6 +60,12 @@
     "binary_sensor": {
       "power_expected": {
         "name": "Наявність світла за графіком"
+      },
+      "outage_active": {
+        "name": "Відключення активне"
+      },
+      "planned_maintenance": {
+        "name": "Планові роботи активні"
       }
     },
     "sensor": {
@@ -77,6 +83,24 @@
       },
       "balance": {
         "name": "Баланс рахунку"
+      },
+      "customer_name": {
+        "name": "ПІБ споживача"
+      },
+      "eic": {
+        "name": "EIC-код"
+      },
+      "meter_serial": {
+        "name": "Номер лічильника"
+      },
+      "meter_type": {
+        "name": "Тип лічильника"
+      },
+      "day_reading": {
+        "name": "Показання день"
+      },
+      "night_reading": {
+        "name": "Показання ніч"
       }
     },
     "calendar": {
