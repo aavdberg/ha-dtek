@@ -1,4 +1,4 @@
-"""Constants for the DTEK Outages integration."""
+"""Constants for the DTEK integration."""
 
 from __future__ import annotations
 

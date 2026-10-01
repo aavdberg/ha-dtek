@@ -1,4 +1,4 @@
-"""Diagnostics support for DTEK Outages."""
+"""Diagnostics support for DTEK."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-# Home Assistant – DTEK Outages (ha-dtek)
+# Home Assistant – DTEK (ha-dtek)
 
 [![GitHub Release](https://img.shields.io/github/v/release/aavdberg/ha-dtek?include_prereleases&style=flat-square)](https://github.com/aavdberg/ha-dtek/releases)
 [![Validate with hassfest](https://github.com/aavdberg/ha-dtek/actions/workflows/hassfest.yml/badge.svg)](https://github.com/aavdberg/ha-dtek/actions/workflows/hassfest.yml)

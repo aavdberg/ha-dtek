@@ -1,4 +1,4 @@
-"""Config flow and Options flow for DTEK Outages integration."""
+"""Config flow and Options flow for DTEK integration."""
 
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ SETUP_MODE_MANUAL = "manual"
 
 
 class DtekConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Handle a config flow for DTEK Outages."""
+    """Handle a config flow for DTEK."""
 
     VERSION = 1
 

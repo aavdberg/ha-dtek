@@ -2,7 +2,7 @@
   "config": {
     "step": {
       "user": {
-        "title": "Configure DTEK Outages",
+        "title": "Configure DTEK",
         "description": "Choose your regional DTEK provider and setup method.",
         "data": {
           "dso": "Regional DSO",

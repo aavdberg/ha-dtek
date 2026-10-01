@@ -1,4 +1,4 @@
-"""Sensor platform for DTEK Outages integration."""
+"""Sensor platform for DTEK integration."""
 
 from __future__ import annotations
 

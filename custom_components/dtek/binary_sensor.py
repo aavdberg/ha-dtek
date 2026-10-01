@@ -1,4 +1,4 @@
-"""Binary sensor platform for DTEK Outages integration."""
+"""Binary sensor platform for DTEK integration."""
 
 from __future__ import annotations
 

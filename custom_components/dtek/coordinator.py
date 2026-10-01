@@ -1,4 +1,4 @@
-"""DataUpdateCoordinator for DTEK Outages integration."""
+"""DataUpdateCoordinator for DTEK integration."""
 
 from __future__ import annotations
 

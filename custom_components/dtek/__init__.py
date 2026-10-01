@@ -1,4 +1,4 @@
-"""The DTEK Outages integration."""
+"""The DTEK integration."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Calendar platform for DTEK Outages integration."""
+"""Calendar platform for DTEK integration."""
 
 from __future__ import annotations
 
