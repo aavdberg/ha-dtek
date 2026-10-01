@@ -9,6 +9,7 @@ import random
 import re
 from datetime import datetime
 from typing import Any, Final
+from zoneinfo import ZoneInfo
 
 import aiohttp
 
@@ -73,6 +74,11 @@ STREET_PREFIX_PATTERN = re.compile(
 # getHomeNum reports outage windows as "HH:MM DD.MM.YYYY".
 HOUSE_DATE_FORMAT: Final = "%H:%M %d.%m.%Y"
 
+# The portal reports wall-clock times for Ukraine. Home Assistant may run in any
+# timezone (UTC is common in containers), so timestamps are anchored to the
+# source zone rather than the host's, keeping DST transitions correct.
+DTEK_TIMEZONE: Final = ZoneInfo("Europe/Kyiv")
+
 # The portal renders type "1" as планові ремонтні роботи and type "2" using the
 # free-text sub_type. See the switch in /src/js/static/discon-schedule.js.
 OUTAGE_TYPE_CODES: Final[dict[str, str]] = {
@@ -82,16 +88,27 @@ OUTAGE_TYPE_CODES: Final[dict[str, str]] = {
 PLANNED_WORKS_DESCRIPTION: Final = "Планові ремонтні роботи"
 
 
+def ensure_dtek_timezone(value: datetime) -> datetime:
+    """Anchor a naive timestamp to the DTEK source timezone.
+
+    Mixing naive and aware datetimes raises TypeError on comparison, which
+    would abort an entire coordinator refresh, so every timestamp entering the
+    integration is normalised here.
+    """
+    return value if value.tzinfo is not None else value.replace(tzinfo=DTEK_TIMEZONE)
+
+
 def _parse_house_datetime(value: str) -> datetime | None:
     """Parse a getHomeNum timestamp, returning None when absent or malformed."""
     cleaned = (value or "").strip()
     if not cleaned:
         return None
     try:
-        return datetime.strptime(cleaned, HOUSE_DATE_FORMAT)
+        parsed = datetime.strptime(cleaned, HOUSE_DATE_FORMAT)
     except ValueError:
         _LOGGER.debug("Unrecognised DTEK outage timestamp: %s", cleaned)
         return None
+    return ensure_dtek_timezone(parsed)
 
 
 def parse_house_outage(house_info: DtekHouseInfo) -> DtekOutageEvent | None:
@@ -105,7 +122,12 @@ def parse_house_outage(house_info: DtekHouseInfo) -> DtekOutageEvent | None:
     if start is None or end is None or end <= start:
         return None
 
-    outage_type = OUTAGE_TYPE_CODES.get(str(house_info.outage_type).strip(), OUTAGE_TYPE_EMERGENCY)
+    # Only the documented codes are trusted. An unknown or missing type would
+    # otherwise be reported to the user as a confirmed emergency.
+    outage_type = OUTAGE_TYPE_CODES.get(str(house_info.outage_type).strip())
+    if outage_type is None:
+        _LOGGER.debug("Ignoring DTEK outage with unknown type: %s", house_info.outage_type)
+        return None
 
     description = (house_info.sub_type or "").strip()
     if not description:
@@ -125,7 +147,7 @@ def parse_house_outage(house_info: DtekHouseInfo) -> DtekOutageEvent | None:
 GROUP_CYRILLIC_TRANSLATION = str.maketrans({"Г": "G", "П": "P", "В": "V", "г": "G", "п": "P", "в": "V"})
 
 # Address strings from the cabinet look like
-# "с-ще Обухівка, вул. Незалежності буд. 1 Б".
+# "с-ще Тестове, вул. Тестова буд. 1 Б".
 ADDRESS_HOUSE_PATTERN = re.compile(r"\s*(?:буд\.?|б\.)\s*", re.IGNORECASE)
 
 
@@ -312,7 +334,10 @@ def _parse_schedule_payload(data: dict[str, Any], group: str | None) -> list[Dte
         end = _parse_house_datetime(str(item.get("end_date") or item.get("end") or ""))
         if start is None or end is None or end <= start:
             continue
-        outage_type = OUTAGE_TYPE_CODES.get(str(item.get("type", "")).strip(), OUTAGE_TYPE_EMERGENCY)
+        outage_type = OUTAGE_TYPE_CODES.get(str(item.get("type", "")).strip())
+        if outage_type is None:
+            _LOGGER.debug("Ignoring DTEK schedule entry with unknown type: %s", item.get("type"))
+            continue
         description = str(item.get("sub_type") or "").strip()
         if not description and outage_type == OUTAGE_TYPE_PLANNED:
             description = PLANNED_WORKS_DESCRIPTION

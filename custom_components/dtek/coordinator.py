@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from datetime import datetime, timedelta
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import (
+    DTEK_TIMEZONE,
     DtekApiClient,
     DtekCabinetProfile,
     DtekConnectionError,
@@ -16,6 +18,7 @@ from .api import (
     DtekOutageEvent,
     DtekRateLimitError,
     DtekState,
+    ensure_dtek_timezone,
     find_house_info,
     parse_house_outage,
 )
@@ -32,6 +35,13 @@ def _merge_events(
     merged: list[DtekOutageEvent] = []
     seen: set[tuple[datetime, datetime, str]] = set()
     for event in [*house_events, *schedule_events]:
+        # Normalise first so a naive timestamp cannot poison the comparisons
+        # below, and so duplicates are detected across both sources.
+        event = replace(
+            event,
+            start=ensure_dtek_timezone(event.start),
+            end=ensure_dtek_timezone(event.end),
+        )
         key = (event.start, event.end, event.outage_type)
         if key in seen:
             continue
@@ -142,12 +152,9 @@ class DtekDataUpdateCoordinator(DataUpdateCoordinator[DtekState]):
                     if house_outage is not None:
                         house_events.append(house_outage)
                 else:
-                    _LOGGER.debug(
-                        "House %s not present in DTEK address list for %s, %s",
-                        self.house_number,
-                        self.city,
-                        self.street,
-                    )
+                    # House numbers are sensitive (see diagnostics.py), so the
+                    # address itself is deliberately kept out of the log.
+                    _LOGGER.debug("Configured house not present in DTEK address list")
 
             # Fetch schedule events
             events = await self.client.async_get_schedule(
@@ -158,7 +165,7 @@ class DtekDataUpdateCoordinator(DataUpdateCoordinator[DtekState]):
             )
             events = _merge_events(house_events, events)
 
-            now = datetime.now()
+            now = datetime.now(DTEK_TIMEZONE)
             current_outage = None
             next_outage = None
 

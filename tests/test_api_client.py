@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -10,8 +10,10 @@ import aiohttp
 import pytest
 
 from custom_components.dtek.api.client import (
+    DTEK_TIMEZONE,
     MAX_RETRIES,
     DtekApiClient,
+    ensure_dtek_timezone,
     find_house_info,
     normalize_house_number,
     parse_cabinet_address,
@@ -235,7 +237,7 @@ async def test_cabinet_authenticate_real_response_shape() -> None:
     session = MagicMock(spec=aiohttp.ClientSession)
     mock_resp_data = {
         "status": "success",
-        "accounts": [{"account": "120002055261", "name": None, "address": None}],
+        "accounts": [{"account": "100000000000", "name": None, "address": None}],
         "user": {
             "token": "secret_cabinet_jwt_token",
             "name": "Тест",
@@ -250,7 +252,7 @@ async def test_cabinet_authenticate_real_response_shape() -> None:
     user = await client.async_cabinet_authenticate("+380501112233", "pwd")
 
     assert user.token == "secret_cabinet_jwt_token"
-    assert user.primary_account == "120002055261"
+    assert user.primary_account == "100000000000"
     assert user.primary_eic is None
     assert user.customer_name == "Тестенко Тест Тестович"
 
@@ -260,14 +262,14 @@ async def test_cabinet_objects_info_returns_mapping() -> None:
     """objects/info returns a customer/place mapping rather than a list."""
     session = MagicMock(spec=aiohttp.ClientSession)
     payload = {
-        "customer": {"account": "120002055261", "eic": "62Z1234567890123"},
+        "customer": {"account": "100000000000", "eic": "62Z1234567890123"},
         "place": {"address": "с-ще Тестове, вул. Тестова буд. 1 Б"},
         "status": "success",
     }
     session.post = MagicMock(return_value=MockResponse(status=200, json_data=payload))
 
     client = DtekApiClient(session=session)
-    info = await client.async_get_cabinet_objects_info("token", "120002055261")
+    info = await client.async_get_cabinet_objects_info("token", "100000000000")
 
     assert info["customer"]["eic"] == "62Z1234567890123"
 
@@ -341,7 +343,7 @@ async def test_cabinet_profile_aggregates_all_sources() -> None:
     client.async_get_cabinet_objects_info = AsyncMock(
         return_value={
             "customer": {
-                "account": "120002055261",
+                "account": "100000000000",
                 "name": "Тестенко Т.Т.",
                 "address": "с-ще Тестове, вул. Тестова буд. 1 Б",
                 "objectType": "Житловий будинок",
@@ -358,7 +360,7 @@ async def test_cabinet_profile_aggregates_all_sources() -> None:
     client.async_get_cabinet_balance = AsyncMock(return_value=-12.5)
     client.async_get_cabinet_group = AsyncMock(return_value="GPV1.2")
 
-    profile = await client.async_get_cabinet_profile("token", "120002055261")
+    profile = await client.async_get_cabinet_profile("token", "100000000000")
 
     assert profile.customer_name == "Тестенко Т.Т."
     assert profile.eic == "62Z1234567890123"
@@ -375,9 +377,9 @@ async def test_cabinet_profile_aggregates_all_sources() -> None:
 
 def test_parse_cabinet_address_variants() -> None:
     """Addresses with and without an explicit house marker are split correctly."""
-    assert parse_cabinet_address("с-ще Обухівка, вул. Незалежності буд. 1 Б") == (
-        "с-ще Обухівка",
-        "вул. Незалежності",
+    assert parse_cabinet_address("с-ще Тестове, вул. Тестова буд. 1 Б") == (
+        "с-ще Тестове",
+        "вул. Тестова",
         "1Б",
     )
     assert parse_cabinet_address("м. Дніпро, вул. Центральна 12") == (
@@ -544,8 +546,8 @@ def test_parse_house_outage_planned_works() -> None:
 
     assert event is not None
     assert event.outage_type == "planned"
-    assert event.start == datetime(2026, 9, 24, 10, 0)
-    assert event.end == datetime(2026, 9, 24, 17, 0)
+    assert event.start == datetime(2026, 9, 24, 10, 0, tzinfo=DTEK_TIMEZONE)
+    assert event.end == datetime(2026, 9, 24, 17, 0, tzinfo=DTEK_TIMEZONE)
     assert event.description == "Планові ремонтні роботи"
     assert event.group == "GPV1.2"
 
@@ -581,6 +583,47 @@ def test_parse_house_outage_rejects_end_before_start() -> None:
     assert (
         parse_house_outage(_house(outage_type="1", start_date="17:00 24.09.2026", end_date="10:00 24.09.2026")) is None
     )
+
+
+def test_parse_house_outage_ignores_unknown_type() -> None:
+    """An undocumented type code must not be reported as a real outage."""
+    assert (
+        parse_house_outage(_house(outage_type="7", start_date="10:00 24.09.2026", end_date="17:00 24.09.2026")) is None
+    )
+
+
+def test_parse_house_outage_ignores_missing_type() -> None:
+    """A window with no type must not be fabricated into an emergency."""
+    assert (
+        parse_house_outage(_house(outage_type="", start_date="10:00 24.09.2026", end_date="17:00 24.09.2026")) is None
+    )
+
+
+def test_parse_house_outage_is_timezone_aware_in_source_zone() -> None:
+    """Wall-clock portal times are anchored to Ukraine, not to the host."""
+    event = parse_house_outage(_house(outage_type="1", start_date="10:00 24.09.2026", end_date="17:00 24.09.2026"))
+
+    assert event is not None
+    assert event.start.tzinfo is not None
+    # 24 September is summer time in Kyiv: UTC+3.
+    assert event.start.utcoffset() == timedelta(hours=3)
+    assert event.start.astimezone(UTC) == datetime(2026, 9, 24, 7, 0, tzinfo=UTC)
+
+
+def test_parse_house_outage_handles_winter_time() -> None:
+    """A January window uses UTC+2, so DST is applied rather than a fixed offset."""
+    event = parse_house_outage(_house(outage_type="1", start_date="10:00 15.01.2026", end_date="17:00 15.01.2026"))
+
+    assert event is not None
+    assert event.start.utcoffset() == timedelta(hours=2)
+
+
+def test_ensure_dtek_timezone_leaves_aware_values_untouched() -> None:
+    """An already-aware timestamp must not be re-anchored."""
+    aware = datetime(2026, 9, 24, 10, 0, tzinfo=UTC)
+
+    assert ensure_dtek_timezone(aware) is aware
+    assert ensure_dtek_timezone(datetime(2026, 9, 24, 10, 0)).tzinfo is DTEK_TIMEZONE
 
 
 @pytest.mark.asyncio
@@ -624,7 +667,31 @@ async def test_get_schedule_parses_payload_when_served() -> None:
     # The same window is reported by all four methods, so it must be deduped.
     assert len(events) == 1
     assert events[0].outage_type == "planned"
-    assert events[0].start == datetime(2026, 9, 24, 10, 0)
+    assert events[0].start == datetime(2026, 9, 24, 10, 0, tzinfo=DTEK_TIMEZONE)
+
+
+@pytest.mark.asyncio
+async def test_get_schedule_skips_entries_with_unknown_type() -> None:
+    """Schedule entries carrying an undocumented type code are dropped."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    session.cookie_jar = []
+    payload = {
+        "result": True,
+        "data": [
+            {
+                "type": "9",
+                "sub_type": "",
+                "start_date": "10:00 24.09.2026",
+                "end_date": "17:00 24.09.2026",
+            }
+        ],
+    }
+    session.post = MagicMock(return_value=MockResponse(status=200, json_data=payload))
+
+    client = DtekApiClient(session=session)
+    client._csrf_token = "token"
+
+    assert await client.async_get_schedule(group="GPV1.2") == []
 
 
 def test_normalize_house_number_folds_separators_and_lookalikes() -> None:

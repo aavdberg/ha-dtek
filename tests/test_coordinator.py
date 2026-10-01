@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from custom_components.dtek.api.client import DTEK_TIMEZONE
 from custom_components.dtek.api.exceptions import DtekConnectionError, DtekError, DtekRateLimitError
 from custom_components.dtek.api.models import (
     DtekAddressLookupResult,
@@ -43,7 +44,7 @@ async def test_coordinator_update_data_with_address() -> None:
     client.async_get_home_numbers = AsyncMock(return_value=lookup)
 
     # Mock get_schedule with an upcoming outage
-    now = datetime.now()
+    now = datetime.now(DTEK_TIMEZONE)
     event = DtekOutageEvent(
         start=now + timedelta(hours=2),
         end=now + timedelta(hours=5),
@@ -80,7 +81,7 @@ async def test_coordinator_active_outage_power_expected_false() -> None:
     client = MagicMock()
     client.async_get_home_numbers = AsyncMock()
 
-    now = datetime.now()
+    now = datetime.now(DTEK_TIMEZONE)
     active_outage = DtekOutageEvent(
         start=now - timedelta(minutes=30),
         end=now + timedelta(hours=2),
@@ -274,13 +275,16 @@ async def test_coordinator_builds_outage_from_house_info() -> None:
 
     assert len(state.events) == 1
     assert state.events[0].outage_type == "planned"
-    assert state.events[0].start == datetime(2026, 9, 24, 10, 0)
-    assert state.events[0].end == datetime(2026, 9, 24, 17, 0)
+    assert state.events[0].start == datetime(2026, 9, 24, 10, 0, tzinfo=DTEK_TIMEZONE)
+    assert state.events[0].end == datetime(2026, 9, 24, 17, 0, tzinfo=DTEK_TIMEZONE)
 
 
 @pytest.mark.asyncio
 async def test_coordinator_deduplicates_house_and_schedule_events() -> None:
     """The same window from both sources must be reported once."""
+    # Deliberately naive: the schedule source may omit timezone information
+    # while the house source is anchored to Europe/Kyiv. The merge must
+    # normalise both so the duplicate is still detected.
     duplicate = DtekOutageEvent(
         start=datetime(2026, 9, 24, 10, 0),
         end=datetime(2026, 9, 24, 17, 0),

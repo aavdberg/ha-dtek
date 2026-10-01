@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
-from .client import DtekApiClient, find_house_info, normalize_house_number, parse_house_outage
+from .client import (
+    DTEK_TIMEZONE,
+    DtekApiClient,
+    ensure_dtek_timezone,
+    find_house_info,
+    normalize_house_number,
+    parse_house_outage,
+)
 from .exceptions import (
     DtekAddressNotFoundError,
     DtekAuthError,
@@ -22,6 +29,7 @@ from .models import (
 )
 
 __all__ = [
+    "DTEK_TIMEZONE",
     "DtekAddressLookupResult",
     "DtekAddressNotFoundError",
     "DtekApiClient",
@@ -36,6 +44,7 @@ __all__ = [
     "DtekRateLimitError",
     "DtekResponseError",
     "DtekState",
+    "ensure_dtek_timezone",
     "find_house_info",
     "normalize_house_number",
     "parse_house_outage",
