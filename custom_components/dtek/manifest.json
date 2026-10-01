@@ -1,6 +1,6 @@
 {
   "domain": "dtek",
-  "name": "DTEK",
+  "name": "ha-dtek",
   "codeowners": ["@aavdberg"],
   "config_flow": true,
   "documentation": "https://github.com/aavdberg/ha-dtek",

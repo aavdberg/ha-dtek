@@ -5,6 +5,7 @@ from __future__ import annotations
 from .client import DtekApiClient
 from .exceptions import (
     DtekAddressNotFoundError,
+    DtekAuthError,
     DtekConnectionError,
     DtekCsrfError,
     DtekError,
@@ -13,6 +14,7 @@ from .exceptions import (
 )
 from .models import (
     DtekAddressLookupResult,
+    DtekCabinetUser,
     DtekHouseInfo,
     DtekOutageEvent,
     DtekState,
@@ -22,6 +24,8 @@ __all__ = [
     "DtekAddressLookupResult",
     "DtekAddressNotFoundError",
     "DtekApiClient",
+    "DtekAuthError",
+    "DtekCabinetUser",
     "DtekConnectionError",
     "DtekCsrfError",
     "DtekError",

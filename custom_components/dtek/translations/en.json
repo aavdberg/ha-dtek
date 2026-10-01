@@ -2,7 +2,7 @@
   "config": {
     "step": {
       "user": {
-        "title": "Configure DTEK",
+        "title": "Configure ha-dtek",
         "description": "Choose your regional DTEK provider and setup method.",
         "data": {
           "dso": "Regional DSO",

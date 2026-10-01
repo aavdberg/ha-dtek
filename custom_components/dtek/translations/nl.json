@@ -2,7 +2,7 @@
   "config": {
     "step": {
       "user": {
-        "title": "DTEK configureren",
+        "title": "ha-dtek configureren",
         "description": "Kies uw regionale DTEK-netbeheerder en installatiemethode.",
         "data": {
           "dso": "Regionale netbeheerder (DSO)",
