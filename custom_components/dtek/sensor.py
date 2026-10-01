@@ -163,9 +163,7 @@ async def async_setup_entry(
 
     created_keys = {description.key for description in descriptions}
     stale_keys = {
-        description.key
-        for description in CABINET_SENSOR_DESCRIPTIONS
-        if description.key not in created_keys
+        description.key for description in CABINET_SENSOR_DESCRIPTIONS if description.key not in created_keys
     } | OBSOLETE_SENSOR_KEYS
     _async_remove_stale_entities(hass, entry, stale_keys)
 
