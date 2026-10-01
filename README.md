@@ -28,6 +28,14 @@ Users often receive official DTEK Telegram notifications for scheduled maintenan
 
 **ha-dtek** queries DTEK directly to bridge this gap, providing accurate power status predictions and calendar events in Home Assistant.
 
+### Where outage data comes from
+
+Outage windows are read from the public DTEK portal's address lookup, which reports a start time, an estimated restoration time and a reason per house number. Planned maintenance and emergency repairs are distinguished automatically and surface as `planned` and `emergency` respectively.
+
+No Telegram access is required or used. The Telegram announcements are delivered by DTEK's own bot in a private bot chat, and the Telegram API does not let one bot read another bot's messages, so a user-account (MTProto) session would be needed to consume them. The same information is available from the portal, so the integration reads it there instead.
+
+Be aware that the portal publishes a maintenance window to the address lookup when it becomes current, so it may give less advance notice than the Telegram announcement does.
+
 ---
 
 ## Features

@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import aiohttp
 import pytest
 
-from custom_components.dtek.api.client import MAX_RETRIES, DtekApiClient, parse_cabinet_address
+from custom_components.dtek.api.client import (
+    MAX_RETRIES,
+    DtekApiClient,
+    find_house_info,
+    normalize_house_number,
+    parse_cabinet_address,
+    parse_house_outage,
+)
 from custom_components.dtek.api.exceptions import (
     DtekAddressNotFoundError,
     DtekAuthError,
@@ -16,6 +24,7 @@ from custom_components.dtek.api.exceptions import (
     DtekCsrfError,
     DtekRateLimitError,
 )
+from custom_components.dtek.api.models import DtekHouseInfo
 
 
 class MockResponse:
@@ -513,3 +522,142 @@ async def test_post_ajax_retries_on_server_error(monkeypatch: pytest.MonkeyPatch
 
     assert result == {"data": "ok"}
     assert len(delays) == 1
+
+
+def _house(**kwargs: Any) -> DtekHouseInfo:
+    """Build a DtekHouseInfo with getHomeNum defaults."""
+    defaults: dict[str, Any] = {
+        "house_num": "7",
+        "group": "GPV1.2",
+        "sub_type": "",
+        "start_date": "",
+        "end_date": "",
+        "outage_type": "",
+    }
+    defaults.update(kwargs)
+    return DtekHouseInfo(**defaults)
+
+
+def test_parse_house_outage_planned_works() -> None:
+    """type=1 maps to a planned maintenance window."""
+    event = parse_house_outage(_house(outage_type="1", start_date="10:00 24.09.2026", end_date="17:00 24.09.2026"))
+
+    assert event is not None
+    assert event.outage_type == "planned"
+    assert event.start == datetime(2026, 9, 24, 10, 0)
+    assert event.end == datetime(2026, 9, 24, 17, 0)
+    assert event.description == "Планові ремонтні роботи"
+    assert event.group == "GPV1.2"
+
+
+def test_parse_house_outage_emergency_uses_sub_type_text() -> None:
+    """type=2 keeps the portal's free-text reason."""
+    event = parse_house_outage(
+        _house(
+            outage_type="2",
+            sub_type="Аварійні ремонтні роботи",
+            start_date="07:56 02.07.2025",
+            end_date="15:25 01.10.2026",
+        )
+    )
+
+    assert event is not None
+    assert event.outage_type == "emergency"
+    assert event.description == "Аварійні ремонтні роботи"
+
+
+def test_parse_house_outage_without_window_returns_none() -> None:
+    """An unaffected address carries empty date fields."""
+    assert parse_house_outage(_house()) is None
+
+
+def test_parse_house_outage_ignores_malformed_dates() -> None:
+    """A malformed timestamp must not raise."""
+    assert parse_house_outage(_house(outage_type="1", start_date="not-a-date", end_date="17:00 24.09.2026")) is None
+
+
+def test_parse_house_outage_rejects_end_before_start() -> None:
+    """An inverted window is not a usable event."""
+    assert (
+        parse_house_outage(_house(outage_type="1", start_date="17:00 24.09.2026", end_date="10:00 24.09.2026")) is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_schedule_returns_empty_on_unknown_method() -> None:
+    """Retired AJAX methods answer 'Unknown method!' and yield no events."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    session.cookie_jar = []
+    session.post = MagicMock(
+        return_value=MockResponse(status=200, json_data={"result": False, "error": ["Unknown method!"]})
+    )
+
+    client = DtekApiClient(session=session)
+    client._csrf_token = "token"
+
+    assert await client.async_get_schedule(group="GPV1.2") == []
+
+
+@pytest.mark.asyncio
+async def test_get_schedule_parses_payload_when_served() -> None:
+    """A region that still serves a schedule payload is parsed, not discarded."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    session.cookie_jar = []
+    payload = {
+        "result": True,
+        "data": [
+            {
+                "type": "1",
+                "sub_type": "",
+                "start_date": "10:00 24.09.2026",
+                "end_date": "17:00 24.09.2026",
+            }
+        ],
+    }
+    session.post = MagicMock(return_value=MockResponse(status=200, json_data=payload))
+
+    client = DtekApiClient(session=session)
+    client._csrf_token = "token"
+
+    events = await client.async_get_schedule(group="GPV1.2")
+
+    # The same window is reported by all four methods, so it must be deduped.
+    assert len(events) == 1
+    assert events[0].outage_type == "planned"
+    assert events[0].start == datetime(2026, 9, 24, 10, 0)
+
+
+def test_normalize_house_number_folds_separators_and_lookalikes() -> None:
+    """The portal writes 1/Б where the cabinet returns 1Б."""
+    assert normalize_house_number("1/Б") == normalize_house_number("1Б")
+    assert normalize_house_number(" 1 / б ") == normalize_house_number("1Б")
+    # Latin B typed instead of Cyrillic Б.
+    assert normalize_house_number("1/B") == normalize_house_number("1Б")
+    assert normalize_house_number("12-A") == normalize_house_number("12А")
+
+
+def test_find_house_info_matches_across_formats() -> None:
+    """A cabinet-derived house number resolves against portal keys."""
+    houses = {
+        "1": _house(house_num="1"),
+        "1/А": _house(house_num="1/А"),
+        "1/Б": _house(house_num="1/Б", outage_type="1"),
+    }
+
+    # Regression: the cabinet stores "1Б" while the portal key is "1/Б", so
+    # exact matching silently dropped the house and every outage with it.
+    matched = find_house_info(houses, "1Б")
+    assert matched is not None
+    assert matched.house_num == "1/Б"
+
+    # An exact key still wins and must not be confused with its neighbours.
+    assert find_house_info(houses, "1/А").house_num == "1/А"
+    assert find_house_info(houses, "1").house_num == "1"
+
+
+def test_find_house_info_returns_none_when_absent() -> None:
+    """A house that genuinely is not listed yields None rather than a guess."""
+    houses = {"1": _house(house_num="1")}
+    assert find_house_info(houses, "99") is None
+    assert find_house_info(houses, "") is None
+    assert find_house_info(houses, None) is None

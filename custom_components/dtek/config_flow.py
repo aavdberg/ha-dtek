@@ -16,6 +16,8 @@ from .api import (
     DtekAuthError,
     DtekConnectionError,
     DtekError,
+    find_house_info,
+    normalize_house_number,
 )
 from .const import (
     CONF_ACCOUNT,
@@ -129,17 +131,14 @@ class DtekConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     self._street = lookup.resolved_street
 
                 # Look for matching house number (handle formatting differences such as slashes or letters)
-                matched_house = None
-                normalized_input = (
-                    self._house_number.replace(" ", "").replace("/", "").lower().replace("b", "б").replace("a", "а")
-                )
-
-                for house_key, house_info in lookup.houses.items():
-                    norm_key = house_key.replace(" ", "").replace("/", "").lower().replace("b", "б").replace("a", "а")
-                    if norm_key == normalized_input or house_key == self._house_number:
-                        matched_house = house_info
-                        self._house_number = house_key
-                        break
+                matched_house = find_house_info(lookup.houses, self._house_number)
+                if matched_house is not None:
+                    # Store the portal's canonical key so later lookups match exactly.
+                    target = normalize_house_number(self._house_number)
+                    for house_key in lookup.houses:
+                        if house_key == self._house_number or normalize_house_number(house_key) == target:
+                            self._house_number = house_key
+                            break
 
                 if matched_house and matched_house.group:
                     self._group = matched_house.group

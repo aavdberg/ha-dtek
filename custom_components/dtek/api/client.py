@@ -7,10 +7,12 @@ import base64
 import logging
 import random
 import re
-from typing import Any
+from datetime import datetime
+from typing import Any, Final
 
 import aiohttp
 
+from ..const import OUTAGE_TYPE_EMERGENCY, OUTAGE_TYPE_PLANNED
 from .endpoints import (
     AJAX_PATH,
     METHOD_GET_CURRENT_SCHEDULE,
@@ -67,6 +69,56 @@ STREET_PREFIX_PATTERN = re.compile(
     r"^(вул\.|пров\.|просп\.|бульв\.|туп\.|узвіз|площа|пл\.|вулиця|провулок|проспект)\s*",
     re.IGNORECASE,
 )
+
+# getHomeNum reports outage windows as "HH:MM DD.MM.YYYY".
+HOUSE_DATE_FORMAT: Final = "%H:%M %d.%m.%Y"
+
+# The portal renders type "1" as планові ремонтні роботи and type "2" using the
+# free-text sub_type. See the switch in /src/js/static/discon-schedule.js.
+OUTAGE_TYPE_CODES: Final[dict[str, str]] = {
+    "1": OUTAGE_TYPE_PLANNED,
+    "2": OUTAGE_TYPE_EMERGENCY,
+}
+PLANNED_WORKS_DESCRIPTION: Final = "Планові ремонтні роботи"
+
+
+def _parse_house_datetime(value: str) -> datetime | None:
+    """Parse a getHomeNum timestamp, returning None when absent or malformed."""
+    cleaned = (value or "").strip()
+    if not cleaned:
+        return None
+    try:
+        return datetime.strptime(cleaned, HOUSE_DATE_FORMAT)
+    except ValueError:
+        _LOGGER.debug("Unrecognised DTEK outage timestamp: %s", cleaned)
+        return None
+
+
+def parse_house_outage(house_info: DtekHouseInfo) -> DtekOutageEvent | None:
+    """Build an outage event from a getHomeNum house entry.
+
+    Returns None when the house has no outage window attached, which is the
+    normal case for an address that is not currently affected.
+    """
+    start = _parse_house_datetime(house_info.start_date)
+    end = _parse_house_datetime(house_info.end_date)
+    if start is None or end is None or end <= start:
+        return None
+
+    outage_type = OUTAGE_TYPE_CODES.get(str(house_info.outage_type).strip(), OUTAGE_TYPE_EMERGENCY)
+
+    description = (house_info.sub_type or "").strip()
+    if not description:
+        description = PLANNED_WORKS_DESCRIPTION if outage_type == OUTAGE_TYPE_PLANNED else ""
+
+    return DtekOutageEvent(
+        start=start,
+        end=end,
+        outage_type=outage_type,
+        description=description,
+        group=house_info.group,
+    )
+
 
 # The cabinet reports queue groups in Cyrillic (e.g. "ГПВ1.2") while the public
 # shutdowns portal uses the Latin transliteration ("GPV1.2").
@@ -181,6 +233,100 @@ def resolve_settlement_and_street(
                 return c, s
 
     return None
+
+
+def normalize_house_number(value: str) -> str:
+    """Normalise a house number for comparison across DTEK data sources.
+
+    The public portal writes "1/Б" while the Personal Cabinet returns "1Б" for
+    the same address, and users type either form with assorted spacing. Latin
+    lookalikes are folded onto their Cyrillic counterparts.
+    """
+    return (
+        (value or "")
+        .strip()
+        .replace(" ", "")
+        .replace("/", "")
+        .replace("-", "")
+        .lower()
+        .replace("b", "б")
+        .replace("a", "а")
+        .replace("e", "е")
+        .replace("k", "к")
+        .replace("m", "м")
+    )
+
+
+def find_house_info(houses: dict[str, DtekHouseInfo], house_number: str | None) -> DtekHouseInfo | None:
+    """Look up a house entry tolerating formatting differences between sources."""
+    if not house_number:
+        return None
+    if house_number in houses:
+        return houses[house_number]
+
+    target = normalize_house_number(house_number)
+    if not target:
+        return None
+    for key, info in houses.items():
+        if normalize_house_number(key) == target:
+            return info
+    return None
+
+
+def _dedupe_events(events: list[DtekOutageEvent]) -> list[DtekOutageEvent]:
+    """Drop duplicate windows that several sources may report identically."""
+    seen: set[tuple[datetime, datetime, str]] = set()
+    unique: list[DtekOutageEvent] = []
+    for event in events:
+        key = (event.start, event.end, event.outage_type)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(event)
+    unique.sort(key=lambda event: event.start)
+    return unique
+
+
+def _parse_schedule_payload(data: dict[str, Any], group: str | None) -> list[DtekOutageEvent]:
+    """Extract outage windows from a legacy schedule response.
+
+    The retired methods were never observed returning data, so this stays
+    deliberately tolerant: anything that does not look like a start/end pair is
+    skipped rather than raising.
+    """
+    events: list[DtekOutageEvent] = []
+
+    candidates: list[Any] = []
+    for key in ("data", "fact", "preset", "schedule", "plan"):
+        value = data.get(key)
+        if isinstance(value, list):
+            candidates.extend(value)
+        elif isinstance(value, dict):
+            nested = value.get("data")
+            candidates.extend(nested if isinstance(nested, list) else value.values())
+
+    for item in candidates:
+        if not isinstance(item, dict):
+            continue
+        start = _parse_house_datetime(str(item.get("start_date") or item.get("start") or ""))
+        end = _parse_house_datetime(str(item.get("end_date") or item.get("end") or ""))
+        if start is None or end is None or end <= start:
+            continue
+        outage_type = OUTAGE_TYPE_CODES.get(str(item.get("type", "")).strip(), OUTAGE_TYPE_EMERGENCY)
+        description = str(item.get("sub_type") or "").strip()
+        if not description and outage_type == OUTAGE_TYPE_PLANNED:
+            description = PLANNED_WORKS_DESCRIPTION
+        events.append(
+            DtekOutageEvent(
+                start=start,
+                end=end,
+                outage_type=outage_type,
+                description=description,
+                group=group,
+            )
+        )
+
+    return events
 
 
 class DtekApiClient:
@@ -439,8 +585,13 @@ class DtekApiClient:
         street: str | None = None,
         house: str | None = None,
     ) -> list[DtekOutageEvent]:
-        """Query schedule and planned outages for a group or address."""
-        # Query methods: getPlan or getSchedule if available
+        """Query legacy schedule methods for a group or address.
+
+        These AJAX methods have been retired on the Dnipro portal, which now
+        answers "Unknown method!", so this is strictly best-effort for regions
+        that may still serve them. The authoritative source of outage windows
+        is the per-house payload of getHomeNum, parsed by parse_house_outage.
+        """
         events: list[DtekOutageEvent] = []
 
         for method in (METHOD_GET_PLAN, METHOD_GET_SCHEDULE, METHOD_GET_CURRENT_SCHEDULE, METHOD_GET_FACT):
@@ -456,12 +607,17 @@ class DtekApiClient:
 
             try:
                 data = await self._async_post_ajax(payload)
-                _LOGGER.debug("Response from %s: %s", method, str(data)[:300])
             except Exception as err:
                 _LOGGER.debug("Method %s not supported or returned error: %s", method, err)
                 continue
 
-        return events
+            if not isinstance(data, dict) or not data.get("result"):
+                _LOGGER.debug("Method %s returned no usable payload: %s", method, str(data)[:200])
+                continue
+
+            events.extend(_parse_schedule_payload(data, group))
+
+        return _dedupe_events(events)
 
     async def async_cabinet_authenticate(
         self,
