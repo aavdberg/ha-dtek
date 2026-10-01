@@ -34,7 +34,7 @@ Outage windows are read from the public DTEK portal's address lookup, which repo
 
 No Telegram access is required or used. The Telegram announcements are delivered by DTEK's own bot in a private bot chat, and the Telegram API does not let one bot read another bot's messages, so a user-account (MTProto) session would be needed to consume them. The same information is available from the portal, so the integration reads it there instead.
 
-Be aware that the portal publishes a maintenance window to the address lookup when it becomes current, so it may give less advance notice than the Telegram announcement does.
+Be aware that it is not yet confirmed how far in advance the portal publishes a planned maintenance window to the address lookup. It may only appear once the window becomes current, in which case the integration gives less advance notice than the Telegram announcement does. See [issue #20](https://github.com/aavdberg/ha-dtek/issues/20) — the automation examples below that rely on advance warning depend on this.
 
 ---
 
