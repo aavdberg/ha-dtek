@@ -232,3 +232,161 @@ async def test_coordinator_raises_update_failed_on_generic_api_error() -> None:
 
     with pytest.raises(UpdateFailed, match="DTEK API error"):
         await coordinator._async_update_data()
+
+
+@pytest.mark.asyncio
+async def test_coordinator_builds_outage_from_house_info() -> None:
+    """Planned works on the resolved house become a real outage event.
+
+    Regression test for the bug where getHomeNum outage fields were parsed
+    into DtekHouseInfo but then discarded by the coordinator, leaving every
+    outage entity permanently empty.
+    """
+    hass = MagicMock()
+    client = MagicMock()
+    client.async_get_schedule = AsyncMock(return_value=[])
+    client.async_get_home_numbers = AsyncMock(
+        return_value=DtekAddressLookupResult(
+            result=True,
+            houses={
+                "7": DtekHouseInfo(
+                    house_num="7",
+                    group="GPV1.2",
+                    sub_type="",
+                    start_date="10:00 24.09.2026",
+                    end_date="17:00 24.09.2026",
+                    outage_type="1",
+                )
+            },
+        )
+    )
+
+    coordinator = DtekDataUpdateCoordinator(
+        hass=hass,
+        client=client,
+        group="GPV1.2",
+        city="с-ще Тестове",
+        street="вул. Тестова",
+        house_number="7",
+    )
+
+    state = await coordinator._async_update_data()
+
+    assert len(state.events) == 1
+    assert state.events[0].outage_type == "planned"
+    assert state.events[0].start == datetime(2026, 9, 24, 10, 0)
+    assert state.events[0].end == datetime(2026, 9, 24, 17, 0)
+
+
+@pytest.mark.asyncio
+async def test_coordinator_deduplicates_house_and_schedule_events() -> None:
+    """The same window from both sources must be reported once."""
+    duplicate = DtekOutageEvent(
+        start=datetime(2026, 9, 24, 10, 0),
+        end=datetime(2026, 9, 24, 17, 0),
+        outage_type="planned",
+        description="Планові ремонтні роботи",
+        group="GPV1.2",
+    )
+
+    hass = MagicMock()
+    client = MagicMock()
+    client.async_get_schedule = AsyncMock(return_value=[duplicate])
+    client.async_get_home_numbers = AsyncMock(
+        return_value=DtekAddressLookupResult(
+            result=True,
+            houses={
+                "7": DtekHouseInfo(
+                    house_num="7",
+                    group="GPV1.2",
+                    sub_type="",
+                    start_date="10:00 24.09.2026",
+                    end_date="17:00 24.09.2026",
+                    outage_type="1",
+                )
+            },
+        )
+    )
+
+    coordinator = DtekDataUpdateCoordinator(
+        hass=hass,
+        client=client,
+        group="GPV1.2",
+        city="с-ще Тестове",
+        street="вул. Тестова",
+        house_number="7",
+    )
+
+    state = await coordinator._async_update_data()
+
+    assert len(state.events) == 1
+
+
+@pytest.mark.asyncio
+async def test_coordinator_unaffected_house_yields_no_events() -> None:
+    """An address with empty outage fields produces no events."""
+    hass = MagicMock()
+    client = MagicMock()
+    client.async_get_schedule = AsyncMock(return_value=[])
+    client.async_get_home_numbers = AsyncMock(
+        return_value=DtekAddressLookupResult(
+            result=True,
+            houses={"7": DtekHouseInfo(house_num="7", group="GPV1.2")},
+        )
+    )
+
+    coordinator = DtekDataUpdateCoordinator(
+        hass=hass,
+        client=client,
+        group="GPV1.2",
+        city="с-ще Тестове",
+        street="вул. Тестова",
+        house_number="7",
+    )
+
+    state = await coordinator._async_update_data()
+
+    assert state.events == []
+    assert state.power_expected is True
+
+
+@pytest.mark.asyncio
+async def test_coordinator_matches_house_despite_format_difference() -> None:
+    """A cabinet-formatted house number resolves against the portal key.
+
+    The Personal Cabinet reports "1Б" while getHomeNum keys the same address
+    as "1/Б"; exact matching dropped the house and with it every outage.
+    """
+    hass = MagicMock()
+    client = MagicMock()
+    client.async_get_schedule = AsyncMock(return_value=[])
+    client.async_get_home_numbers = AsyncMock(
+        return_value=DtekAddressLookupResult(
+            result=True,
+            houses={
+                "1/Б": DtekHouseInfo(
+                    house_num="1/Б",
+                    group="GPV1.2",
+                    sub_type="",
+                    start_date="10:00 24.09.2026",
+                    end_date="17:00 24.09.2026",
+                    outage_type="1",
+                )
+            },
+        )
+    )
+
+    coordinator = DtekDataUpdateCoordinator(
+        hass=hass,
+        client=client,
+        group="GPV1.1",
+        city="с-ще Тестове",
+        street="вул. Тестова",
+        house_number="1Б",
+    )
+
+    state = await coordinator._async_update_data()
+
+    assert len(state.events) == 1
+    assert state.events[0].outage_type == "planned"
+    assert state.group == "GPV1.2"
