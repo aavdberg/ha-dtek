@@ -10,12 +10,22 @@ from homeassistant import config_entries
 from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .api import DtekAddressNotFoundError, DtekApiClient, DtekConnectionError, DtekError
+from .api import (
+    DtekAddressNotFoundError,
+    DtekApiClient,
+    DtekAuthError,
+    DtekConnectionError,
+    DtekError,
+)
 from .const import (
+    CONF_ACCOUNT,
     CONF_CITY,
     CONF_DSO,
+    CONF_EIC,
     CONF_GROUP,
     CONF_HOUSE_NUMBER,
+    CONF_PASSWORD,
+    CONF_PHONE,
     CONF_STREET,
     CONF_UPDATE_INTERVAL,
     DEFAULT_DSO,
@@ -30,6 +40,7 @@ _LOGGER = logging.getLogger(__name__)
 
 CONF_SETUP_MODE = "setup_mode"
 SETUP_MODE_ADDRESS = "address"
+SETUP_MODE_CABINET = "cabinet"
 SETUP_MODE_MANUAL = "manual"
 
 
@@ -57,6 +68,8 @@ class DtekConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._dso = user_input[CONF_DSO]
             setup_mode = user_input.get(CONF_SETUP_MODE, SETUP_MODE_ADDRESS)
 
+            if setup_mode == SETUP_MODE_CABINET:
+                return await self.async_step_cabinet()
             if setup_mode == SETUP_MODE_MANUAL:
                 return await self.async_step_manual_group()
             return await self.async_step_address()
@@ -69,6 +82,7 @@ class DtekConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required(CONF_SETUP_MODE, default=SETUP_MODE_ADDRESS): vol.In(
                     {
                         SETUP_MODE_ADDRESS: "Automatic address lookup",
+                        SETUP_MODE_CABINET: "Personal Cabinet (ok.dtek) login",
                         SETUP_MODE_MANUAL: "Manual group/queue entry",
                     }
                 ),
@@ -111,21 +125,11 @@ class DtekConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 # Look for matching house number (handle formatting differences such as slashes or letters)
                 matched_house = None
                 normalized_input = (
-                    self._house_number.replace(" ", "")
-                    .replace("/", "")
-                    .lower()
-                    .replace("b", "б")
-                    .replace("a", "а")
+                    self._house_number.replace(" ", "").replace("/", "").lower().replace("b", "б").replace("a", "а")
                 )
 
                 for house_key, house_info in lookup.houses.items():
-                    norm_key = (
-                        house_key.replace(" ", "")
-                        .replace("/", "")
-                        .lower()
-                        .replace("b", "б")
-                        .replace("a", "а")
-                    )
+                    norm_key = house_key.replace(" ", "").replace("/", "").lower().replace("b", "б").replace("a", "а")
                     if norm_key == normalized_input or house_key == self._house_number:
                         matched_house = house_info
                         self._house_number = house_key
@@ -173,6 +177,75 @@ class DtekConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="address",
+            data_schema=schema,
+            errors=errors,
+        )
+
+    async def async_step_cabinet(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> config_entries.ConfigFlowResult:
+        """Step to authenticate via DTEK Personal Cabinet."""
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            phone = user_input[CONF_PHONE].strip()
+            password = user_input[CONF_PASSWORD].strip()
+
+            session = async_get_clientsession(self.hass)
+            base_url = SUPPORTED_DSOS[self._dso]["base_url"]
+            client = DtekApiClient(session=session, base_url=base_url)
+
+            try:
+                user = await client.async_cabinet_authenticate(phone=phone, password=password)
+                account = user.primary_account or "default"
+                eic = user.primary_eic or ""
+                group = "GPV1.1"
+
+                # If EIC is available, try to resolve exact GPV schedule
+                if eic:
+                    sched = await client.async_get_cabinet_powertrack_schedule(
+                        token=user.token,
+                        eic=eic,
+                        account=account,
+                    )
+                    if isinstance(sched, dict) and sched.get("data", {}).get("gpv"):
+                        group = str(sched["data"]["gpv"])
+
+                unique_id = f"{self._dso}_cabinet_{account}".lower()
+                await self.async_set_unique_id(unique_id)
+                self._abort_if_unique_id_configured()
+
+                dso_name = SUPPORTED_DSOS[self._dso]["name"].split(" (")[0]
+                title = f"DTEK {dso_name} ({account})"
+
+                return self.async_create_entry(
+                    title=title,
+                    data={
+                        CONF_DSO: self._dso,
+                        CONF_PHONE: phone,
+                        CONF_PASSWORD: password,
+                        CONF_ACCOUNT: account,
+                        CONF_EIC: eic,
+                        CONF_GROUP: group,
+                    },
+                )
+            except DtekAuthError:
+                errors["base"] = "invalid_auth"
+            except DtekConnectionError:
+                errors["base"] = "cannot_connect"
+            except DtekError:
+                errors["base"] = "unknown"
+
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_PHONE): str,
+                vol.Required(CONF_PASSWORD): str,
+            }
+        )
+
+        return self.async_show_form(
+            step_id="cabinet",
             data_schema=schema,
             errors=errors,
         )

@@ -14,3 +14,9 @@ METHOD_GET_SCHEDULE: Final = "getSchedule"
 METHOD_GET_FACT: Final = "getFact"
 METHOD_GET_PLAN: Final = "getPlan"
 METHOD_GET_CURRENT_SCHEDULE: Final = "getCurrentSchedule"
+
+# Cabinet REST API paths
+PATH_CABINET_AUTH_PERSON: Final = "/api/auth/person"
+PATH_CABINET_POWERTRACK: Final = "/api/post-powertrack-api"
+PATH_CABINET_OBJECTS_INFO: Final = "/api/person/objects/info"
+PATH_CABINET_BALANCE: Final = "/api/person/itm_balance"

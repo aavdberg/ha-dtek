@@ -52,6 +52,18 @@ class DtekOutageEvent:
         return self.start <= now < self.end
 
 
+@dataclass(slots=True, frozen=True)
+class DtekCabinetUser:
+    """Authenticated user info from ok.dtek cabinet."""
+
+    token: str
+    phone: str
+    accounts: list[str] = field(default_factory=list)
+    eic_codes: list[str] = field(default_factory=list)
+    primary_account: str | None = None
+    primary_eic: str | None = None
+
+
 @dataclass(slots=True)
 class DtekState:
     """Aggregated state for a configured DTEK location."""
@@ -63,3 +75,6 @@ class DtekState:
     events: list[DtekOutageEvent] = field(default_factory=list)
     last_updated: datetime = field(default_factory=datetime.now)
     flags: dict[str, bool] = field(default_factory=dict)
+    balance: float | None = None
+    meter_reading: float | None = None
+    cabinet_authenticated: bool = False

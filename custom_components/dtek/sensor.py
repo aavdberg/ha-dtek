@@ -62,6 +62,13 @@ SENSOR_DESCRIPTIONS: tuple[DtekSensorEntityDescription, ...] = (
         icon="mdi:numeric",
         value_fn=lambda state: state.group,
     ),
+    DtekSensorEntityDescription(
+        key="balance",
+        translation_key="balance",
+        icon="mdi:cash-multiple",
+        native_unit_of_measurement="UAH",
+        value_fn=lambda state: state.balance,
+    ),
 )
 
 

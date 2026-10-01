@@ -178,6 +178,7 @@ def _install_homeassistant_stubs() -> None:
         translation_key: str = ""
         device_class: str = ""
         icon: str = ""
+        native_unit_of_measurement: str | None = None
 
     class SensorEntity:
         pass

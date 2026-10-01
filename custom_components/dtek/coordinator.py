@@ -31,6 +31,9 @@ class DtekDataUpdateCoordinator(DataUpdateCoordinator[DtekState]):
         city: str | None = None,
         street: str | None = None,
         house_number: str | None = None,
+        cabinet_token: str | None = None,
+        cabinet_account: str | None = None,
+        cabinet_eic: str | None = None,
         update_interval: timedelta = DEFAULT_SCAN_INTERVAL,
     ) -> None:
         """Initialize coordinator."""
@@ -45,6 +48,9 @@ class DtekDataUpdateCoordinator(DataUpdateCoordinator[DtekState]):
         self.city = city
         self.street = street
         self.house_number = house_number
+        self.cabinet_token = cabinet_token
+        self.cabinet_account = cabinet_account
+        self.cabinet_eic = cabinet_eic
 
     async def _async_update_data(self) -> DtekState:
         """Fetch latest data from DTEK portal."""
@@ -98,6 +104,14 @@ class DtekDataUpdateCoordinator(DataUpdateCoordinator[DtekState]):
 
             power_expected = current_outage is None
 
+            # Cabinet enrichment (if credentials provided)
+            balance = None
+            if self.cabinet_token and self.cabinet_account:
+                balance = await self.client.async_get_cabinet_balance(
+                    token=self.cabinet_token,
+                    account=self.cabinet_account,
+                )
+
             return DtekState(
                 group=self.group,
                 power_expected=power_expected,
@@ -106,6 +120,8 @@ class DtekDataUpdateCoordinator(DataUpdateCoordinator[DtekState]):
                 events=events,
                 last_updated=now,
                 flags=flags,
+                balance=balance,
+                cabinet_authenticated=bool(self.cabinet_token),
             )
 
         except DtekRateLimitError as err:

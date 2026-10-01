@@ -99,3 +99,25 @@ async def test_coordinator_active_outage_power_expected_false() -> None:
     assert state.power_expected is False
     assert state.current_outage is not None
     assert state.current_outage.description == "Transformer repair"
+
+
+@pytest.mark.asyncio
+async def test_coordinator_cabinet_balance_update() -> None:
+    """Test coordinator updates balance when cabinet account info is provided."""
+    hass = MagicMock()
+    client = MagicMock()
+    client.async_get_schedule = AsyncMock(return_value=[])
+    client.async_get_cabinet_balance = AsyncMock(return_value=-42.50)
+
+    coordinator = DtekDataUpdateCoordinator(
+        hass=hass,
+        client=client,
+        group="GPV1.2",
+        cabinet_token="mock_token",
+        cabinet_account="12345678",
+    )
+
+    state = await coordinator._async_update_data()
+
+    assert state.balance == -42.50
+    assert state.cabinet_authenticated is True

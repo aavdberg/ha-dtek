@@ -24,10 +24,19 @@
         "data": {
           "group": "Groep / Queue"
         }
+      },
+      "cabinet": {
+        "title": "DTEK Persoonlijk Kabinet Login",
+        "description": "Log in met uw DTEK Persoonlijk Kabinet telefoonnummer en wachtwoord.",
+        "data": {
+          "phone": "Telefoonnummer",
+          "password": "Wachtwoord"
+        }
       }
     },
     "error": {
       "cannot_connect": "Kan geen verbinding maken met het DTEK-portaal. Controleer uw internetverbinding.",
+      "invalid_auth": "Ongeldig telefoonnummer of wachtwoord voor DTEK Persoonlijk Kabinet.",
       "address_not_found": "Plaats of straat niet gevonden op het DTEK-portaal.",
       "house_not_found": "Huisnummer niet gevonden in de DTEK-straatlijst.",
       "unknown": "Er is een onverwachte fout opgetreden."
@@ -65,6 +74,9 @@
       },
       "group": {
         "name": "Stroomgroep"
+      },
+      "balance": {
+        "name": "Accountsaldo"
       }
     },
     "calendar": {

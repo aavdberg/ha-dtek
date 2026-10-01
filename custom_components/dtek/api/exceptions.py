@@ -25,3 +25,7 @@ class DtekResponseError(DtekError):
 
 class DtekAddressNotFoundError(DtekError):
     """Exception raised when an address or house number is not found."""
+
+
+class DtekAuthError(DtekError):
+    """Exception raised when cabinet authentication fails."""

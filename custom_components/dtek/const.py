@@ -15,6 +15,13 @@ CONF_STREET: Final = "street"
 CONF_HOUSE_NUMBER: Final = "house_number"
 CONF_GROUP: Final = "group"
 CONF_UPDATE_INTERVAL: Final = "update_interval"
+CONF_PHONE: Final = "phone"
+CONF_PASSWORD: Final = "password"
+CONF_ACCOUNT: Final = "account"
+CONF_EIC: Final = "eic"
+
+# Cabinet constants
+CABINET_BASE_URL: Final = "https://ok.dtek-dnem.com.ua"
 
 # Defaults
 DEFAULT_SCAN_INTERVAL: Final = timedelta(minutes=15)

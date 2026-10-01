@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import random
 import re
@@ -18,16 +19,20 @@ from .endpoints import (
     METHOD_GET_PLAN,
     METHOD_GET_SCHEDULE,
     METHOD_GET_STREETS,
+    PATH_CABINET_AUTH_PERSON,
+    PATH_CABINET_BALANCE,
+    PATH_CABINET_POWERTRACK,
     SHUTDOWNS_PATH,
 )
 from .exceptions import (
     DtekAddressNotFoundError,
+    DtekAuthError,
     DtekConnectionError,
     DtekCsrfError,
     DtekRateLimitError,
     DtekResponseError,
 )
-from .models import DtekAddressLookupResult, DtekHouseInfo, DtekOutageEvent
+from .models import DtekAddressLookupResult, DtekCabinetUser, DtekHouseInfo, DtekOutageEvent
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -100,12 +105,15 @@ class DtekApiClient:
         self,
         session: aiohttp.ClientSession,
         base_url: str = "https://www.dtek-dnem.com.ua",
+        cabinet_base_url: str = "https://ok.dtek-dnem.com.ua",
     ) -> None:
         """Initialize the DTEK API client."""
         self._session = session
         self._base_url = base_url.rstrip("/")
+        self._cabinet_base_url = cabinet_base_url.rstrip("/")
         self._csrf_token: str | None = None
         self._streets_cache: dict[str, list[str]] | None = None
+        self._cabinet_token: str | None = None
 
     @property
     def base_url(self) -> str:
@@ -356,3 +364,152 @@ class DtekApiClient:
                 continue
 
         return events
+
+    async def async_cabinet_authenticate(
+        self,
+        phone: str,
+        password: str,
+        site: str = "dnem",
+    ) -> DtekCabinetUser:
+        """Authenticate user against DTEK Personal Cabinet (ok.dtek)."""
+        clean_phone = phone.strip().replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
+        if not clean_phone.startswith("+"):
+            clean_phone = f"+{clean_phone}" if len(clean_phone) > 10 else f"+38{clean_phone}"
+
+        credentials = f"{clean_phone}:{password}"
+        encoded_auth = base64.b64encode(credentials.encode("utf-8")).decode("ascii")
+
+        url = f"{self._cabinet_base_url}{PATH_CABINET_AUTH_PERSON}"
+        headers = {
+            "User-Agent": DEFAULT_USER_AGENT,
+            "Authorization": f"Basic {encoded_auth}",
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/plain, */*",
+        }
+        payload = {
+            "phone": clean_phone,
+            "userType": "person",
+            "language": "uk-UA",
+            "platform": "Win32",
+            "site": site,
+        }
+
+        try:
+            async with self._session.post(
+                url, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=20)
+            ) as resp:
+                if resp.status in (401, 403):
+                    raise DtekAuthError("Invalid phone number or password for DTEK Personal Cabinet")
+                if resp.status >= 400:
+                    raise DtekConnectionError(f"Cabinet authentication failed with HTTP {resp.status}")
+
+                data = await resp.json(content_type=None)
+        except (TimeoutError, aiohttp.ClientError) as err:
+            raise DtekConnectionError(f"Connection failed to DTEK cabinet: {err}") from err
+
+        # Handle direct response dict or nested "data" dict
+        resp_data = data.get("data") if isinstance(data, dict) and isinstance(data.get("data"), dict) else data
+        user_data = resp_data.get("user") if isinstance(resp_data, dict) else None
+        if not user_data or not user_data.get("token"):
+            # Check if token is at top level of user_data or resp_data
+            if isinstance(resp_data, dict) and resp_data.get("token"):
+                user_data = resp_data
+            else:
+                status_text = (
+                    data.get("message")
+                    or data.get("status")
+                    or (resp_data.get("message") if isinstance(resp_data, dict) else None)
+                    or "Authentication failed"
+                )
+                raise DtekAuthError(f"DTEK cabinet login rejected: {status_text}")
+
+        token = str(user_data["token"])
+        self._cabinet_token = token
+
+        # Extract account info (from user_data or resp_data)
+        accounts: list[str] = []
+        eic_codes: list[str] = []
+
+        raw_accounts = (
+            user_data.get("accounts") or (resp_data.get("accounts") if isinstance(resp_data, dict) else None) or []
+        )
+        for acc in raw_accounts:
+            if isinstance(acc, dict):
+                if acc.get("account"):
+                    accounts.append(str(acc["account"]))
+                if acc.get("eic"):
+                    eic_codes.append(str(acc["eic"]))
+            elif isinstance(acc, str):
+                accounts.append(acc)
+
+        primary_account = accounts[0] if accounts else None
+        primary_eic = eic_codes[0] if eic_codes else None
+
+        return DtekCabinetUser(
+            token=token,
+            phone=clean_phone,
+            accounts=accounts,
+            eic_codes=eic_codes,
+            primary_account=primary_account,
+            primary_eic=primary_eic,
+        )
+
+    async def async_get_cabinet_powertrack_schedule(
+        self,
+        token: str,
+        eic: str,
+        account: str,
+        site: str = "dnem",
+    ) -> dict[str, Any]:
+        """Fetch precise account-level GPV schedule from cabinet."""
+        url = f"{self._cabinet_base_url}{PATH_CABINET_POWERTRACK}"
+        payload = {
+            "token": token,
+            "eic": eic,
+            "account": account,
+            "site": site,
+        }
+        headers = {
+            "User-Agent": DEFAULT_USER_AGENT,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        try:
+            async with self._session.post(
+                url, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=20)
+            ) as resp:
+                if resp.status == 200:
+                    return await resp.json(content_type=None)
+        except Exception as err:
+            _LOGGER.debug("Could not fetch powertrack schedule: %s", err)
+        return {}
+
+    async def async_get_cabinet_balance(
+        self,
+        token: str,
+        account: str,
+    ) -> float | None:
+        """Fetch account balance from cabinet."""
+        url = f"{self._cabinet_base_url}{PATH_CABINET_BALANCE}"
+        payload = {"token": token, "account": account}
+        headers = {
+            "User-Agent": DEFAULT_USER_AGENT,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        try:
+            async with self._session.post(
+                url, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=20)
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json(content_type=None)
+                    if isinstance(data, dict):
+                        # May be {"balance": 150.75} or {"data": {"balance": 150.75}}
+                        balance_val = data.get("balance")
+                        if balance_val is None and isinstance(data.get("data"), dict):
+                            balance_val = data["data"].get("balance")
+                        if balance_val is not None:
+                            return float(balance_val)
+        except Exception as err:
+            _LOGGER.debug("Could not fetch cabinet balance: %s", err)
+        return None

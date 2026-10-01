@@ -10,10 +10,14 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import DtekApiClient
 from .const import (
+    CONF_ACCOUNT,
     CONF_CITY,
     CONF_DSO,
+    CONF_EIC,
     CONF_GROUP,
     CONF_HOUSE_NUMBER,
+    CONF_PASSWORD,
+    CONF_PHONE,
     CONF_STREET,
     CONF_UPDATE_INTERVAL,
     DEFAULT_DSO,
@@ -34,10 +38,26 @@ async def async_setup_entry(hass: HomeAssistant, entry: DtekConfigEntry) -> bool
     city = entry.data.get(CONF_CITY)
     street = entry.data.get(CONF_STREET)
     house_number = entry.data.get(CONF_HOUSE_NUMBER)
+    phone = entry.data.get(CONF_PHONE)
+    account = entry.data.get(CONF_ACCOUNT)
+    eic = entry.data.get(CONF_EIC)
+    password = entry.data.get(CONF_PASSWORD)
 
     base_url = SUPPORTED_DSOS.get(dso, {}).get("base_url", "https://www.dtek-dnem.com.ua")
     session = async_get_clientsession(hass)
     client = DtekApiClient(session=session, base_url=base_url)
+
+    cabinet_token = None
+    if phone and password:
+        try:
+            user = await client.async_cabinet_authenticate(phone=phone, password=password)
+            cabinet_token = user.token
+            if not account and user.primary_account:
+                account = user.primary_account
+            if not eic and user.primary_eic:
+                eic = user.primary_eic
+        except Exception as err:
+            _LOGGER.warning("Could not authenticate to DTEK cabinet during setup: %s", err)
 
     interval_minutes = entry.options.get(
         CONF_UPDATE_INTERVAL,
@@ -52,6 +72,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: DtekConfigEntry) -> bool
         city=city,
         street=street,
         house_number=house_number,
+        cabinet_token=cabinet_token,
+        cabinet_account=account,
+        cabinet_eic=eic,
         update_interval=scan_interval,
     )
 
@@ -65,6 +88,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: DtekConfigEntry) -> bool
         city=city,
         street=street,
         house_number=house_number,
+        phone=phone,
+        account=account,
+        eic=eic,
     )
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)

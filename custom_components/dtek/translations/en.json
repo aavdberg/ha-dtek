@@ -24,10 +24,19 @@
         "data": {
           "group": "Queue / Group"
         }
+      },
+      "cabinet": {
+        "title": "DTEK Personal Cabinet Login",
+        "description": "Log in with your DTEK Personal Cabinet phone number and password.",
+        "data": {
+          "phone": "Phone number",
+          "password": "Password"
+        }
       }
     },
     "error": {
       "cannot_connect": "Failed to connect to DTEK portal. Please check your internet connection.",
+      "invalid_auth": "Invalid phone number or password for DTEK Personal Cabinet.",
       "address_not_found": "City or street was not found on DTEK portal.",
       "house_not_found": "House number was not found in the DTEK street listing.",
       "unknown": "An unexpected error occurred."
@@ -65,6 +74,9 @@
       },
       "group": {
         "name": "Queue group"
+      },
+      "balance": {
+        "name": "Account balance"
       }
     },
     "calendar": {

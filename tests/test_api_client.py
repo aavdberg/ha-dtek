@@ -11,6 +11,7 @@ import pytest
 from custom_components.dtek.api.client import DtekApiClient
 from custom_components.dtek.api.exceptions import (
     DtekAddressNotFoundError,
+    DtekAuthError,
     DtekConnectionError,
     DtekCsrfError,
     DtekRateLimitError,
@@ -152,3 +153,68 @@ def test_resolve_settlement_and_street() -> None:
     resolved = resolve_settlement_and_street("Невідоме", "Невідома", streets_map)
     assert resolved is None
 
+
+@pytest.mark.asyncio
+async def test_cabinet_authenticate_success() -> None:
+    """Test successful login to DTEK cabinet."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    mock_resp_data = {
+        "status": "success",
+        "data": {
+            "user": {
+                "id": "123",
+                "phone": "+380501112233",
+                "name": "Тестовий Користувач",
+                "token": "secret_cabinet_jwt_token",
+            },
+            "accounts": [
+                {
+                    "account": "12345678",
+                    "eic": "62Z1234567890123",
+                    "address": "м. Дніпро, вул. Центральна, 1",
+                }
+            ],
+        },
+    }
+    session.post = MagicMock(return_value=MockResponse(status=200, json_data=mock_resp_data))
+
+    client = DtekApiClient(session=session)
+    user = await client.async_cabinet_authenticate("+380501112233", "password123")
+
+    assert user.token == "secret_cabinet_jwt_token"
+    assert user.phone == "+380501112233"
+    assert user.primary_account == "12345678"
+    assert user.primary_eic == "62Z1234567890123"
+
+
+@pytest.mark.asyncio
+async def test_cabinet_authenticate_invalid_credentials() -> None:
+    """Test cabinet authentication failure."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    mock_resp_data = {
+        "status": "error",
+        "message": "Invalid credentials",
+    }
+    session.post = MagicMock(return_value=MockResponse(status=200, json_data=mock_resp_data))
+
+    client = DtekApiClient(session=session)
+    with pytest.raises(DtekAuthError):
+        await client.async_cabinet_authenticate("+380501112233", "wrong_pass")
+
+
+@pytest.mark.asyncio
+async def test_cabinet_balance_success() -> None:
+    """Test fetching balance from cabinet."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    mock_resp_data = {
+        "status": "success",
+        "data": {
+            "balance": 150.75,
+        },
+    }
+    session.post = MagicMock(return_value=MockResponse(status=200, json_data=mock_resp_data))
+
+    client = DtekApiClient(session=session)
+    balance = await client.async_get_cabinet_balance("secret_token", "12345678")
+
+    assert balance == 150.75
