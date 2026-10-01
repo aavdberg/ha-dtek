@@ -3,17 +3,24 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 
 from custom_components.dtek.api.models import DtekOutageEvent, DtekState
 from custom_components.dtek.binary_sensor import (
+    OUTAGE_ACTIVE_DESCRIPTION,
+    PLANNED_MAINTENANCE_DESCRIPTION,
     POWER_EXPECTED_DESCRIPTION,
-    DtekPowerExpectedBinarySensor,
+    DtekBinarySensor,
 )
 from custom_components.dtek.calendar import DtekOutageCalendarEntity
-from custom_components.dtek.sensor import SENSOR_DESCRIPTIONS, DtekSensor
+from custom_components.dtek.sensor import (
+    CABINET_SENSOR_DESCRIPTIONS,
+    SENSOR_DESCRIPTIONS,
+    DtekSensor,
+)
 
 
 def test_power_expected_binary_sensor() -> None:
@@ -21,11 +28,12 @@ def test_power_expected_binary_sensor() -> None:
     coordinator = MagicMock()
     coordinator.data = DtekState(group="GPV1.2", power_expected=True)
 
-    binary_sensor = DtekPowerExpectedBinarySensor(
+    binary_sensor = DtekBinarySensor(
         coordinator=coordinator,
         description=POWER_EXPECTED_DESCRIPTION,
         entry_id="test_entry",
         group="GPV1.2",
+        is_on_fn=lambda s: s.power_expected,
     )
 
     assert binary_sensor.is_on is True
@@ -34,6 +42,26 @@ def test_power_expected_binary_sensor() -> None:
     # Outage active
     coordinator.data = DtekState(group="GPV1.2", power_expected=False)
     assert binary_sensor.is_on is False
+
+    # Outage active sensor
+    active_sensor = DtekBinarySensor(
+        coordinator=coordinator,
+        description=OUTAGE_ACTIVE_DESCRIPTION,
+        entry_id="test_entry",
+        group="GPV1.2",
+        is_on_fn=lambda s: not s.power_expected,
+    )
+    assert active_sensor.is_on is True
+
+    # Planned maintenance sensor
+    maint_sensor = DtekBinarySensor(
+        coordinator=coordinator,
+        description=PLANNED_MAINTENANCE_DESCRIPTION,
+        entry_id="test_entry",
+        group="GPV1.2",
+        is_on_fn=lambda s: s.current_outage is not None and s.current_outage.outage_type == "planned",
+    )
+    assert maint_sensor.is_on is False
 
 
 def test_dtek_sensors() -> None:
@@ -66,6 +94,31 @@ def test_dtek_sensors() -> None:
     assert sensors["next_outage"].native_value == next_outage.start
     assert sensors["restore_time"].native_value is None
     assert sensors["outage_reason"].native_value == "Substation maintenance"
+    # Cabinet-only entities are not part of the base set.
+    assert "balance" not in sensors
+    assert "customer_name" not in sensors
+    assert "meter_serial" not in sensors
+
+
+def test_cabinet_sensors_only_created_when_data_available() -> None:
+    """Cabinet sensors are skipped for fields the account does not expose."""
+    coordinator = MagicMock()
+    coordinator.data = DtekState(
+        group="GPV1.2",
+        customer_name="Тестенко Т.Т.",
+        eic="62Z1234567890123",
+        meter_serial="04860803",
+        balance=None,
+    )
+
+    available = [desc.key for desc in CABINET_SENSOR_DESCRIPTIONS if desc.value_fn(coordinator.data) is not None]
+
+    assert "customer_name" in available
+    assert "eic" in available
+    assert "meter_serial" in available
+    # No billing figures for this account, so no permanently unknown entity.
+    assert "balance" not in available
+    assert "meter_type" not in available
 
 
 @pytest.mark.asyncio
@@ -105,3 +158,106 @@ async def test_calendar_events() -> None:
     )
     assert len(events) == 1
     assert "Network maintenance" in events[0].summary
+
+
+def _make_entry(coordinator: Any, cabinet_enabled: bool = True) -> MagicMock:
+    entry = MagicMock()
+    entry.entry_id = "test_entry"
+    entry.runtime_data.coordinator = coordinator
+    entry.runtime_data.account = "12345678"
+    entry.runtime_data.group = "GPV1.2"
+    entry.runtime_data.cabinet_enabled = cabinet_enabled
+    return entry
+
+
+def _registry_entry(entity_id: str, unique_id: str) -> MagicMock:
+    entity = MagicMock()
+    entity.entity_id = entity_id
+    entity.domain = "sensor"
+    entity.unique_id = unique_id
+    entity.config_entry_id = "test_entry"
+    return entity
+
+
+@pytest.mark.asyncio
+async def test_setup_entry_removes_only_obsolete_sensors() -> None:
+    """Sensors without any DTEK endpoint are purged; cabinet ones are kept."""
+    from homeassistant.helpers import entity_registry as er
+
+    from custom_components.dtek.sensor import async_setup_entry
+
+    hass = MagicMock()
+    hass.entity_registry = None
+    registry = er.async_get(hass)
+    for entity_id, unique_id in (
+        ("sensor.dtek_day_meter_reading", "test_entry_day_reading"),
+        ("sensor.dtek_night_meter_reading", "test_entry_night_reading"),
+        ("sensor.dtek_account_balance", "test_entry_balance"),
+        ("sensor.dtek_queue_group", "test_entry_group"),
+    ):
+        registry.entities[entity_id] = _registry_entry(entity_id, unique_id)
+
+    coordinator = MagicMock()
+    coordinator.data = DtekState(group="GPV1.2", customer_name="Тестенко Т.Т.")
+
+    added: list[Any] = []
+    await async_setup_entry(hass, _make_entry(coordinator), lambda e: added.extend(e))
+
+    remaining = set(registry.entities)
+    assert "sensor.dtek_day_meter_reading" not in remaining
+    assert "sensor.dtek_night_meter_reading" not in remaining
+    # A cabinet endpoint can fail transiently, so its entity must survive.
+    assert "sensor.dtek_account_balance" in remaining
+    assert "sensor.dtek_queue_group" in remaining
+
+    created = {sensor.entity_description.key for sensor in added}
+    assert "customer_name" in created
+    assert "balance" not in created
+
+
+@pytest.mark.asyncio
+async def test_cabinet_sensor_added_when_value_appears_later() -> None:
+    """A field that only becomes available later still gets an entity."""
+    from custom_components.dtek.coordinator import DtekDataUpdateCoordinator
+    from custom_components.dtek.sensor import async_setup_entry
+
+    hass = MagicMock()
+    hass.entity_registry = None
+
+    coordinator = DtekDataUpdateCoordinator(hass=hass, client=MagicMock(), group="GPV1.2")
+    coordinator.data = DtekState(group="GPV1.2")
+
+    added: list[Any] = []
+    await async_setup_entry(hass, _make_entry(coordinator), lambda e: added.extend(e))
+
+    assert {s.entity_description.key for s in added} == {d.key for d in SENSOR_DESCRIPTIONS}
+
+    # The cabinet endpoint recovers on a later refresh.
+    coordinator.data = DtekState(group="GPV1.2", balance=-12.5, customer_name="Тестенко Т.Т.")
+    coordinator.async_notify_listeners()
+
+    created = {sensor.entity_description.key for sensor in added}
+    assert "balance" in created
+    assert "customer_name" in created
+
+    # A further refresh must not duplicate the entities.
+    coordinator.async_notify_listeners()
+    keys = [sensor.entity_description.key for sensor in added]
+    assert len(keys) == len(set(keys))
+
+
+@pytest.mark.asyncio
+async def test_no_cabinet_sensors_without_account() -> None:
+    """Address-only entries never get cabinet entities."""
+    from custom_components.dtek.sensor import async_setup_entry
+
+    hass = MagicMock()
+    hass.entity_registry = None
+
+    coordinator = MagicMock()
+    coordinator.data = DtekState(group="GPV1.2", customer_name="Тестенко Т.Т.")
+
+    added: list[Any] = []
+    await async_setup_entry(hass, _make_entry(coordinator, cabinet_enabled=False), lambda e: added.extend(e))
+
+    assert {s.entity_description.key for s in added} == {d.key for d in SENSOR_DESCRIPTIONS}

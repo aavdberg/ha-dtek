@@ -1,1 +1,1 @@
-"""Tests for DTEK Outages integration."""
+"""Tests for DTEK integration."""

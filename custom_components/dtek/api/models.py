@@ -31,6 +31,8 @@ class DtekAddressLookupResult:
     show_table_fact: bool = False
     show_user_group: bool = False
     houses: dict[str, DtekHouseInfo] = field(default_factory=dict)
+    resolved_city: str | None = None
+    resolved_street: str | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -50,6 +52,44 @@ class DtekOutageEvent:
         return self.start <= now < self.end
 
 
+@dataclass(slots=True, frozen=True)
+class DtekCabinetUser:
+    """Authenticated user info from ok.dtek cabinet."""
+
+    token: str
+    phone: str
+    accounts: list[str] = field(default_factory=list)
+    eic_codes: list[str] = field(default_factory=list)
+    primary_account: str | None = None
+    primary_eic: str | None = None
+    customer_name: str | None = None
+    city: str | None = None
+    street: str | None = None
+    house_number: str | None = None
+    meter_serial: str | None = None
+    meter_type: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class DtekCabinetProfile:
+    """Customer, contract and metering details for a cabinet account."""
+
+    account: str | None = None
+    customer_name: str | None = None
+    eic: str | None = None
+    address: str | None = None
+    object_type: str | None = None
+    contract_capacity: str | None = None
+    contract_date: str | None = None
+    city: str | None = None
+    street: str | None = None
+    house_number: str | None = None
+    meter_serial: str | None = None
+    meter_type: str | None = None
+    balance: float | None = None
+    group: str | None = None
+
+
 @dataclass(slots=True)
 class DtekState:
     """Aggregated state for a configured DTEK location."""
@@ -61,3 +101,12 @@ class DtekState:
     events: list[DtekOutageEvent] = field(default_factory=list)
     last_updated: datetime = field(default_factory=datetime.now)
     flags: dict[str, bool] = field(default_factory=dict)
+    balance: float | None = None
+    customer_name: str | None = None
+    eic: str | None = None
+    meter_serial: str | None = None
+    meter_type: str | None = None
+    contract_capacity: str | None = None
+    address: str | None = None
+    object_type: str | None = None
+    cabinet_authenticated: bool = False

@@ -1,4 +1,4 @@
-"""Calendar platform for DTEK Outages integration."""
+"""Calendar platform for DTEK integration."""
 
 from __future__ import annotations
 
@@ -24,13 +24,16 @@ async def async_setup_entry(
 ) -> None:
     """Set up DTEK calendar entity."""
     coordinator = entry.runtime_data.coordinator
+    account = entry.runtime_data.account
+    group = entry.runtime_data.group
 
     async_add_entities(
         [
             DtekOutageCalendarEntity(
                 coordinator=coordinator,
                 entry_id=entry.entry_id,
-                group=entry.runtime_data.group,
+                group=group,
+                account=account,
             )
         ]
     )
@@ -44,6 +47,7 @@ class DtekOutageCalendarEntity(CoordinatorEntity[DtekDataUpdateCoordinator], Cal
         coordinator: DtekDataUpdateCoordinator,
         entry_id: str,
         group: str,
+        account: str | None = None,
     ) -> None:
         """Initialize calendar entity."""
         super().__init__(coordinator)
@@ -51,9 +55,11 @@ class DtekOutageCalendarEntity(CoordinatorEntity[DtekDataUpdateCoordinator], Cal
         self._attr_has_entity_name = True
         self._attr_translation_key = "outages"
         self._attr_icon = "mdi:calendar-clock"
+
+        device_name = f"DTEK Account {account}" if account else f"DTEK Grid ({group})"
         self._attr_device_info = {
             "identifiers": {(DOMAIN, entry_id)},
-            "name": f"DTEK Grid ({group})",
+            "name": device_name,
             "manufacturer": MANUFACTURER,
             "model": f"Queue {group}",
         }

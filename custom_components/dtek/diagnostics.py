@@ -1,4 +1,4 @@
-"""Diagnostics support for DTEK Outages."""
+"""Diagnostics support for DTEK."""
 
 from __future__ import annotations
 
@@ -11,6 +11,19 @@ if TYPE_CHECKING:
 
 REDACTED = "**REDACTED**"
 
+# Credentials and identifiers that must never leave the instance in a
+# diagnostics download. `entry.data` is copied wholesale, so anything sensitive
+# has to be listed here explicitly.
+REDACTED_ENTRY_KEYS: frozenset[str] = frozenset(
+    {
+        "password",
+        "phone",
+        "account",
+        "eic",
+        "house_number",
+    }
+)
+
 
 async def async_get_config_entry_diagnostics(
     hass: HomeAssistant,
@@ -19,10 +32,7 @@ async def async_get_config_entry_diagnostics(
     """Return diagnostics for a config entry with PII redacted."""
     coordinator = entry.runtime_data.coordinator
 
-    # Redact specific house numbers for user privacy
-    entry_data = dict(entry.data)
-    if "house_number" in entry_data:
-        entry_data["house_number"] = REDACTED
+    entry_data = {key: REDACTED if key in REDACTED_ENTRY_KEYS and value else value for key, value in entry.data.items()}
 
     state_info: dict[str, Any] = {}
     if coordinator.data:

@@ -23,6 +23,10 @@ class DtekRuntimeData:
     city: str | None = None
     street: str | None = None
     house_number: str | None = None
+    phone: str | None = None
+    account: str | None = None
+    eic: str | None = None
+    cabinet_enabled: bool = False
 
 
 # Type alias for ConfigEntry with runtime data

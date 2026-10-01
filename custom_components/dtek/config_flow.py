@@ -1,4 +1,4 @@
-"""Config flow and Options flow for DTEK Outages integration."""
+"""Config flow and Options flow for DTEK integration."""
 
 from __future__ import annotations
 
@@ -10,12 +10,22 @@ from homeassistant import config_entries
 from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .api import DtekAddressNotFoundError, DtekApiClient, DtekConnectionError, DtekError
+from .api import (
+    DtekAddressNotFoundError,
+    DtekApiClient,
+    DtekAuthError,
+    DtekConnectionError,
+    DtekError,
+)
 from .const import (
+    CONF_ACCOUNT,
     CONF_CITY,
     CONF_DSO,
+    CONF_EIC,
     CONF_GROUP,
     CONF_HOUSE_NUMBER,
+    CONF_PASSWORD,
+    CONF_PHONE,
     CONF_STREET,
     CONF_UPDATE_INTERVAL,
     DEFAULT_DSO,
@@ -24,17 +34,24 @@ from .const import (
     MAX_SCAN_INTERVAL_MINUTES,
     MIN_SCAN_INTERVAL_MINUTES,
     SUPPORTED_DSOS,
+    cabinet_base_url_for_dso,
+    cabinet_site_for_dso,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
 CONF_SETUP_MODE = "setup_mode"
 SETUP_MODE_ADDRESS = "address"
+SETUP_MODE_CABINET = "cabinet"
 SETUP_MODE_MANUAL = "manual"
 
 
+class _AbortCabinetStep(Exception):
+    """Internal signal to redisplay the cabinet form with an error."""
+
+
 class DtekConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Handle a config flow for DTEK Outages."""
+    """Handle a config flow for DTEK."""
 
     VERSION = 1
 
@@ -57,6 +74,8 @@ class DtekConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._dso = user_input[CONF_DSO]
             setup_mode = user_input.get(CONF_SETUP_MODE, SETUP_MODE_ADDRESS)
 
+            if setup_mode == SETUP_MODE_CABINET:
+                return await self.async_step_cabinet()
             if setup_mode == SETUP_MODE_MANUAL:
                 return await self.async_step_manual_group()
             return await self.async_step_address()
@@ -66,8 +85,9 @@ class DtekConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         schema = vol.Schema(
             {
                 vol.Required(CONF_DSO, default=DEFAULT_DSO): vol.In(dso_options),
-                vol.Required(CONF_SETUP_MODE, default=SETUP_MODE_ADDRESS): vol.In(
+                vol.Required(CONF_SETUP_MODE, default=SETUP_MODE_CABINET): vol.In(
                     {
+                        SETUP_MODE_CABINET: "Personal Cabinet (ok.dtek) login [Recommended]",
                         SETUP_MODE_ADDRESS: "Automatic address lookup",
                         SETUP_MODE_MANUAL: "Manual group/queue entry",
                     }
@@ -103,13 +123,20 @@ class DtekConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     street=self._street,
                 )
 
+                if lookup.resolved_city:
+                    self._city = lookup.resolved_city
+                if lookup.resolved_street:
+                    self._street = lookup.resolved_street
+
                 # Look for matching house number (handle formatting differences such as slashes or letters)
                 matched_house = None
-                normalized_input = self._house_number.replace(" ", "").lower()
+                normalized_input = (
+                    self._house_number.replace(" ", "").replace("/", "").lower().replace("b", "б").replace("a", "а")
+                )
 
                 for house_key, house_info in lookup.houses.items():
-                    norm_key = house_key.replace(" ", "").replace("/", "").lower()
-                    if norm_key == normalized_input.replace("/", "") or house_key == self._house_number:
+                    norm_key = house_key.replace(" ", "").replace("/", "").lower().replace("b", "б").replace("a", "а")
+                    if norm_key == normalized_input or house_key == self._house_number:
                         matched_house = house_info
                         self._house_number = house_key
                         break
@@ -156,6 +183,100 @@ class DtekConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="address",
+            data_schema=schema,
+            errors=errors,
+        )
+
+    async def async_step_cabinet(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> config_entries.ConfigFlowResult:
+        """Step to authenticate via DTEK Personal Cabinet."""
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            phone = user_input[CONF_PHONE].strip()
+            password = user_input[CONF_PASSWORD].strip()
+
+            session = async_get_clientsession(self.hass)
+            base_url = SUPPORTED_DSOS[self._dso]["base_url"]
+            site = cabinet_site_for_dso(self._dso)
+            client = DtekApiClient(
+                session=session,
+                base_url=base_url,
+                cabinet_base_url=cabinet_base_url_for_dso(self._dso),
+            )
+
+            try:
+                user = await client.async_cabinet_authenticate(
+                    phone=phone,
+                    password=password,
+                    site=site,
+                )
+                # A login without an account cannot address any cabinet endpoint,
+                # and substituting a placeholder would give every such user the
+                # same bogus identity. Surface the problem instead.
+                account = user.primary_account
+                if not account:
+                    errors["base"] = "no_account"
+                    raise _AbortCabinetStep
+
+                # The cabinet is authoritative: it yields the EIC, the registered
+                # address and the exact GPV queue for this account.
+                profile = await client.async_get_cabinet_profile(
+                    token=user.token,
+                    account=account,
+                    site=site,
+                )
+                eic = profile.eic or user.primary_eic or ""
+                # Guessing a queue would report another group's outages as the
+                # user's own, so an unresolved queue aborts the setup.
+                group = profile.group
+                if not group:
+                    errors["base"] = "no_group"
+                    raise _AbortCabinetStep
+                city = profile.city
+                street = profile.street
+                house = profile.house_number
+
+                unique_id = f"{self._dso}_cabinet_{account}".lower()
+                await self.async_set_unique_id(unique_id)
+                self._abort_if_unique_id_configured()
+
+                title = f"DTEK Account {account}"
+
+                return self.async_create_entry(
+                    title=title,
+                    data={
+                        CONF_DSO: self._dso,
+                        CONF_PHONE: phone,
+                        CONF_PASSWORD: password,
+                        CONF_ACCOUNT: account,
+                        CONF_EIC: eic,
+                        CONF_GROUP: group,
+                        CONF_CITY: city,
+                        CONF_STREET: street,
+                        CONF_HOUSE_NUMBER: house,
+                    },
+                )
+            except _AbortCabinetStep:
+                pass
+            except DtekAuthError:
+                errors["base"] = "invalid_auth"
+            except DtekConnectionError:
+                errors["base"] = "cannot_connect"
+            except DtekError:
+                errors["base"] = "unknown"
+
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_PHONE): str,
+                vol.Required(CONF_PASSWORD): str,
+            }
+        )
+
+        return self.async_show_form(
+            step_id="cabinet",
             data_schema=schema,
             errors=errors,
         )
