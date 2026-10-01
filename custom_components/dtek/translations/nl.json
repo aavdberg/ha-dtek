@@ -39,6 +39,8 @@
       "invalid_auth": "Ongeldig telefoonnummer of wachtwoord voor DTEK Persoonlijk Kabinet.",
       "address_not_found": "Plaats of straat niet gevonden op het DTEK-portaal.",
       "house_not_found": "Huisnummer niet gevonden in de DTEK-straatlijst.",
+      "no_account": "Het DTEK Persoonlijk Kabinet gaf geen account terug voor deze login. Controleer je account in het DTEK-portaal en probeer het opnieuw.",
+      "no_group": "De afschakelgroep (GPV) kon niet worden bepaald voor dit account. Probeer het later opnieuw of voer de groep handmatig in.",
       "unknown": "Er is een onverwachte fout opgetreden."
     },
     "abort": {

@@ -6,9 +6,10 @@ import logging
 from datetime import timedelta
 
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .api import DtekApiClient
+from .api import DtekApiClient, DtekAuthError, DtekError
 from .const import (
     CONF_ACCOUNT,
     CONF_CITY,
@@ -24,6 +25,8 @@ from .const import (
     DEFAULT_SCAN_INTERVAL,
     PLATFORMS,
     SUPPORTED_DSOS,
+    cabinet_base_url_for_dso,
+    cabinet_site_for_dso,
 )
 from .coordinator import DtekDataUpdateCoordinator
 from .models import DtekConfigEntry, DtekRuntimeData
@@ -62,23 +65,38 @@ async def async_setup_entry(hass: HomeAssistant, entry: DtekConfigEntry) -> bool
     password = entry.data.get(CONF_PASSWORD)
 
     base_url = SUPPORTED_DSOS.get(dso, {}).get("base_url", "https://www.dtek-dnem.com.ua")
+    cabinet_site = cabinet_site_for_dso(dso)
     session = async_get_clientsession(hass)
-    client = DtekApiClient(session=session, base_url=base_url)
+    client = DtekApiClient(
+        session=session,
+        base_url=base_url,
+        cabinet_base_url=cabinet_base_url_for_dso(dso),
+    )
 
     cabinet_token = None
     cabinet_customer_name = None
     cabinet_enabled = bool(phone and password)
     if cabinet_enabled:
         try:
-            user = await client.async_cabinet_authenticate(phone=phone, password=password)
+            user = await client.async_cabinet_authenticate(
+                phone=phone,
+                password=password,
+                site=cabinet_site,
+            )
             cabinet_token = user.token
             cabinet_customer_name = user.customer_name
             if not account and user.primary_account:
                 account = user.primary_account
             if not eic and user.primary_eic:
                 eic = user.primary_eic
-        except Exception as err:
-            _LOGGER.warning("Could not authenticate to DTEK cabinet during setup: %s", err)
+        except DtekAuthError as err:
+            # Stored credentials are no longer valid; prompt the user to
+            # reauthenticate instead of loading a permanently broken entry.
+            raise ConfigEntryAuthFailed(f"DTEK Personal Cabinet rejected the stored credentials: {err}") from err
+        except DtekError as err:
+            # Transient connectivity problem: let Home Assistant retry setup
+            # rather than leaving the cabinet permanently unauthenticated.
+            raise ConfigEntryNotReady(f"Could not reach the DTEK Personal Cabinet: {err}") from err
 
     interval_minutes = entry.options.get(
         CONF_UPDATE_INTERVAL,
@@ -97,6 +115,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: DtekConfigEntry) -> bool
         cabinet_account=account,
         cabinet_eic=eic,
         cabinet_customer_name=cabinet_customer_name,
+        cabinet_site=cabinet_site,
         update_interval=scan_interval,
     )
 

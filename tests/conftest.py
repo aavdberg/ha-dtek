@@ -96,6 +96,25 @@ def _install_homeassistant_stubs() -> None:
     config_entries.ConfigFlow = ConfigFlow
     config_entries.OptionsFlow = OptionsFlow
 
+    exceptions = _ensure_module("homeassistant.exceptions")
+
+    class HomeAssistantError(Exception):
+        pass
+
+    class ConfigEntryError(HomeAssistantError):
+        pass
+
+    class ConfigEntryAuthFailed(ConfigEntryError):
+        pass
+
+    class ConfigEntryNotReady(ConfigEntryError):
+        pass
+
+    exceptions.HomeAssistantError = HomeAssistantError
+    exceptions.ConfigEntryError = ConfigEntryError
+    exceptions.ConfigEntryAuthFailed = ConfigEntryAuthFailed
+    exceptions.ConfigEntryNotReady = ConfigEntryNotReady
+
     helpers = _ensure_module("homeassistant.helpers")
     helpers.__path__ = []
 
@@ -124,6 +143,19 @@ def _install_homeassistant_stubs() -> None:
 
         async def async_config_entry_first_refresh(self) -> None:
             pass
+
+        def async_add_listener(self, update_callback: Any, context: Any = None) -> Any:
+            self._listeners = getattr(self, "_listeners", [])
+            self._listeners.append(update_callback)
+
+            def _remove() -> None:
+                self._listeners.remove(update_callback)
+
+            return _remove
+
+        def async_notify_listeners(self) -> None:
+            for listener in list(getattr(self, "_listeners", [])):
+                listener()
 
     class CoordinatorEntity:
         def __class_getitem__(cls, key: Any) -> Any:
@@ -156,11 +188,7 @@ def _install_homeassistant_stubs() -> None:
         return registry
 
     def async_entries_for_config_entry(registry: Any, entry_id: str) -> list[Any]:
-        return [
-            entity
-            for entity in registry.entities.values()
-            if entity.config_entry_id == entry_id
-        ]
+        return [entity for entity in registry.entities.values() if entity.config_entry_id == entry_id]
 
     entity_registry.EntityRegistry = EntityRegistry
     entity_registry.async_get = async_get

@@ -16,7 +16,7 @@ from .api import (
     DtekRateLimitError,
     DtekState,
 )
-from .const import DEFAULT_SCAN_INTERVAL
+from .const import CABINET_DEFAULT_SITE, DEFAULT_SCAN_INTERVAL
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -36,6 +36,7 @@ class DtekDataUpdateCoordinator(DataUpdateCoordinator[DtekState]):
         cabinet_account: str | None = None,
         cabinet_eic: str | None = None,
         cabinet_customer_name: str | None = None,
+        cabinet_site: str = CABINET_DEFAULT_SITE,
         update_interval: timedelta = DEFAULT_SCAN_INTERVAL,
     ) -> None:
         """Initialize coordinator."""
@@ -54,6 +55,7 @@ class DtekDataUpdateCoordinator(DataUpdateCoordinator[DtekState]):
         self.cabinet_account = cabinet_account
         self.cabinet_eic = cabinet_eic
         self.cabinet_customer_name = cabinet_customer_name
+        self.cabinet_site = cabinet_site
 
     async def _async_fetch_cabinet_profile(self) -> DtekCabinetProfile | None:
         """Fetch cabinet details, keeping the update alive if the cabinet is down."""
@@ -63,6 +65,7 @@ class DtekDataUpdateCoordinator(DataUpdateCoordinator[DtekState]):
             return await self.client.async_get_cabinet_profile(
                 token=self.cabinet_token,
                 account=self.cabinet_account,
+                site=self.cabinet_site,
             )
         except DtekError as err:
             _LOGGER.debug("Could not refresh DTEK cabinet profile: %s", err)
@@ -81,11 +84,14 @@ class DtekDataUpdateCoordinator(DataUpdateCoordinator[DtekState]):
                     self.group = profile.group
                 if profile.eic:
                     self.cabinet_eic = profile.eic
-                if not self.city and profile.city:
+                # The registered address can change (or be corrected) on DTEK's
+                # side, so every component the cabinet supplies replaces the
+                # stored one instead of only filling in blanks.
+                if profile.city:
                     self.city = profile.city
-                if not self.street and profile.street:
+                if profile.street:
                     self.street = profile.street
-                if not self.house_number and profile.house_number:
+                if profile.house_number:
                     self.house_number = profile.house_number
 
             flags: dict[str, bool] = {}

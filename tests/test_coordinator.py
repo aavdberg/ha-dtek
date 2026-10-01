@@ -168,4 +168,3 @@ async def test_coordinator_without_cabinet_leaves_fields_empty() -> None:
     assert state.customer_name is None
     assert state.meter_serial is None
     assert state.cabinet_authenticated is False
-

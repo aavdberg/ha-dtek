@@ -29,12 +29,13 @@ from .const import (
     CONF_STREET,
     CONF_UPDATE_INTERVAL,
     DEFAULT_DSO,
-    DEFAULT_GROUP,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     MAX_SCAN_INTERVAL_MINUTES,
     MIN_SCAN_INTERVAL_MINUTES,
     SUPPORTED_DSOS,
+    cabinet_base_url_for_dso,
+    cabinet_site_for_dso,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -43,6 +44,10 @@ CONF_SETUP_MODE = "setup_mode"
 SETUP_MODE_ADDRESS = "address"
 SETUP_MODE_CABINET = "cabinet"
 SETUP_MODE_MANUAL = "manual"
+
+
+class _AbortCabinetStep(Exception):
+    """Internal signal to redisplay the cabinet form with an error."""
 
 
 class DtekConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -195,20 +200,41 @@ class DtekConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
             session = async_get_clientsession(self.hass)
             base_url = SUPPORTED_DSOS[self._dso]["base_url"]
-            client = DtekApiClient(session=session, base_url=base_url)
+            site = cabinet_site_for_dso(self._dso)
+            client = DtekApiClient(
+                session=session,
+                base_url=base_url,
+                cabinet_base_url=cabinet_base_url_for_dso(self._dso),
+            )
 
             try:
-                user = await client.async_cabinet_authenticate(phone=phone, password=password)
-                account = user.primary_account or "default"
+                user = await client.async_cabinet_authenticate(
+                    phone=phone,
+                    password=password,
+                    site=site,
+                )
+                # A login without an account cannot address any cabinet endpoint,
+                # and substituting a placeholder would give every such user the
+                # same bogus identity. Surface the problem instead.
+                account = user.primary_account
+                if not account:
+                    errors["base"] = "no_account"
+                    raise _AbortCabinetStep
 
                 # The cabinet is authoritative: it yields the EIC, the registered
                 # address and the exact GPV queue for this account.
                 profile = await client.async_get_cabinet_profile(
                     token=user.token,
                     account=account,
+                    site=site,
                 )
                 eic = profile.eic or user.primary_eic or ""
-                group = profile.group or DEFAULT_GROUP
+                # Guessing a queue would report another group's outages as the
+                # user's own, so an unresolved queue aborts the setup.
+                group = profile.group
+                if not group:
+                    errors["base"] = "no_group"
+                    raise _AbortCabinetStep
                 city = profile.city
                 street = profile.street
                 house = profile.house_number
@@ -233,6 +259,8 @@ class DtekConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         CONF_HOUSE_NUMBER: house,
                     },
                 )
+            except _AbortCabinetStep:
+                pass
             except DtekAuthError:
                 errors["base"] = "invalid_auth"
             except DtekConnectionError:
