@@ -1,0 +1,26 @@
+name: Setup help / question
+description: Ask for help with installation, address search, or DTEK queue setup.
+title: "[Question]: "
+labels: ["question"]
+body:
+  - type: input
+    id: integration-version
+    attributes:
+      label: ha-dtek version
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: input
+    id: ha-version
+    attributes:
+      label: Home Assistant version
+      placeholder: "2026.9.0"
+    validations:
+      required: true
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: What are you trying to configure, and where are you stuck?
+    validations:
+      required: true

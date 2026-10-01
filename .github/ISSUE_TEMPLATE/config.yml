@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: GitHub Discussions
+    url: https://github.com/aavdberg/ha-dtek/discussions
+    about: Ask setup questions, share ideas, and discuss DTEK outage sensors.
+  - name: Home Assistant custom integration documentation
+    url: https://developers.home-assistant.io/docs/creating_integration_file_structure/
+    about: Reference documentation for Home Assistant custom integrations.

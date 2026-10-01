@@ -1,0 +1,85 @@
+name: Bug report
+description: Report something that is not working in ha-dtek.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a problem. Please provide enough details to reproduce it.
+
+        Please do not submit real street addresses, house numbers, or session cookies.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-checks
+      options:
+        - label: I have searched existing issues and discussions for the same problem.
+          required: true
+        - label: I am using the latest stable or beta release.
+          required: true
+        - label: I have restarted Home Assistant after installing or updating.
+          required: true
+  - type: input
+    id: integration-version
+    attributes:
+      label: ha-dtek version
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: input
+    id: ha-version
+    attributes:
+      label: Home Assistant version
+      placeholder: "2026.9.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: dso-region
+    attributes:
+      label: DTEK Regional DSO
+      options:
+        - Dnipro Grids (dtek-dnem)
+        - Kyiv Grids (dtek-kem)
+        - Kyiv Regional Grids (dtek-krem)
+        - Odesa Grids (dtek-oem)
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe the actual behavior and the impact.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Go to Settings -> Devices & services -> Add integration -> DTEK
+        2. Select provider ...
+        3. Enter street ...
+        4. See error ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Redact exact house numbers, cookies, and personal data.
+      render: text
+      placeholder: |
+        Logger configuration for debugging:
+          custom_components.dtek: debug
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional context

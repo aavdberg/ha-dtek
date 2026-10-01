@@ -1,0 +1,39 @@
+name: Documentation improvement
+description: Report missing, confusing, or outdated documentation.
+title: "[Docs]: "
+labels: ["documentation"]
+body:
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-checks
+      options:
+        - label: I have checked the latest README on dev or main branch.
+          required: true
+  - type: dropdown
+    id: docs-area
+    attributes:
+      label: Documentation area
+      options:
+        - HACS installation
+        - Configuration & address setup
+        - Entities & attributes
+        - Calendar events
+        - Automation examples (Telegram / EcoFlow)
+        - Regional DSOs (Dnipro / Kyiv / Odesa)
+        - Development & contributing
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What is unclear or missing?
+    validations:
+      required: true
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested documentation change
+    validations:
+      required: true

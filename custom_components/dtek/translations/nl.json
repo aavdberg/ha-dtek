@@ -1,0 +1,76 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "DTEK Stroomuitval configureren",
+        "description": "Kies uw regionale DTEK-netbeheerder en installatiemethode.",
+        "data": {
+          "dso": "Regionale netbeheerder (DSO)",
+          "setup_mode": "Installatiemethode"
+        }
+      },
+      "address": {
+        "title": "Adres invoeren",
+        "description": "Voer de plaats, straat en het huisnummer in om automatisch uw stroomgroep en geplande werkzaamheden op te halen.",
+        "data": {
+          "city": "Plaats / Gemeente",
+          "street": "Straat",
+          "house_number": "Huisnummer"
+        }
+      },
+      "manual_group": {
+        "title": "Handmatige groepselectie",
+        "description": "Voer uw DTEK stabilisatieschema-groep in (bijv. GPV1.2).",
+        "data": {
+          "group": "Groep / Queue"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Kan geen verbinding maken met het DTEK-portaal. Controleer uw internetverbinding.",
+      "address_not_found": "Plaats of straat niet gevonden op het DTEK-portaal.",
+      "house_not_found": "Huisnummer niet gevonden in de DTEK-straatlijst.",
+      "unknown": "Er is een onverwachte fout opgetreden."
+    },
+    "abort": {
+      "already_configured": "Deze DTEK-locatie of groep is al geconfigureerd."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "DTEK Opties",
+        "description": "Pas het update-interval aan voor DTEK-schema's en storingsmeldingen.",
+        "data": {
+          "update_interval": "Update-interval (minuten)"
+        }
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "power_expected": {
+        "name": "Stroom verwacht"
+      }
+    },
+    "sensor": {
+      "next_outage": {
+        "name": "Volgende stroomonderbreking"
+      },
+      "restore_time": {
+        "name": "Verwachte hersteltijd"
+      },
+      "outage_reason": {
+        "name": "Reden onderbreking"
+      },
+      "group": {
+        "name": "Stroomgroep"
+      }
+    },
+    "calendar": {
+      "outages": {
+        "name": "Stroomuitvalkalender"
+      }
+    }
+  }
+}

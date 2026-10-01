@@ -1,0 +1,76 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Configure DTEK Outages",
+        "description": "Choose your regional DTEK provider and setup method.",
+        "data": {
+          "dso": "Regional DSO",
+          "setup_mode": "Setup method"
+        }
+      },
+      "address": {
+        "title": "Enter Address",
+        "description": "Enter the city, street, and house number to automatically resolve your outage queue and planned maintenance.",
+        "data": {
+          "city": "City / Settlement",
+          "street": "Street",
+          "house_number": "House number"
+        }
+      },
+      "manual_group": {
+        "title": "Manual Queue Selection",
+        "description": "Enter your DTEK stabilization schedule group (e.g. GPV1.2).",
+        "data": {
+          "group": "Queue / Group"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to DTEK portal. Please check your internet connection.",
+      "address_not_found": "City or street was not found on DTEK portal.",
+      "house_not_found": "House number was not found in the DTEK street listing.",
+      "unknown": "An unexpected error occurred."
+    },
+    "abort": {
+      "already_configured": "This DTEK location or queue is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "DTEK Options",
+        "description": "Adjust polling interval for DTEK schedule and outage updates.",
+        "data": {
+          "update_interval": "Update interval (minutes)"
+        }
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "power_expected": {
+        "name": "Power expected"
+      }
+    },
+    "sensor": {
+      "next_outage": {
+        "name": "Next outage"
+      },
+      "restore_time": {
+        "name": "Restore time"
+      },
+      "outage_reason": {
+        "name": "Outage reason"
+      },
+      "group": {
+        "name": "Queue group"
+      }
+    },
+    "calendar": {
+      "outages": {
+        "name": "Outage schedule"
+      }
+    }
+  }
+}

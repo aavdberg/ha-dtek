@@ -1,0 +1,59 @@
+name: Feature request
+description: Request a concrete enhancement for ha-dtek.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-checks
+      options:
+        - label: I have searched existing issues and discussions for similar requests.
+          required: true
+        - label: This is about ha-dtek, DTEK API endpoints, Home Assistant sensors, or calendar events.
+          required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: Feature summary
+      description: Describe the feature in one or two paragraphs.
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: What user problem does this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposed-solution
+    attributes:
+      label: Proposed solution
+      description: Describe the behavior, entities, calendar events, or options you expect.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - DTEK API client / endpoints
+        - Config flow / address resolution
+        - Sensor / binary sensor entities
+        - Calendar integration
+        - Multi-region support
+        - Automation blueprints
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: What should be true when this feature is done?
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
