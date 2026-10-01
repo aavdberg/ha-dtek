@@ -289,9 +289,7 @@ async def test_cabinet_balance_none_when_empty() -> None:
 async def test_cabinet_group_normalises_cyrillic() -> None:
     """The cabinet reports the queue in Cyrillic; it is normalised to Latin."""
     session = MagicMock(spec=aiohttp.ClientSession)
-    session.post = MagicMock(
-        return_value=MockResponse(status=200, json_data={"status": "success", "gpv": "ГПВ1.2"})
-    )
+    session.post = MagicMock(return_value=MockResponse(status=200, json_data={"status": "success", "gpv": "ГПВ1.2"}))
 
     client = DtekApiClient(session=session)
     group = await client.async_get_cabinet_group("token", "62Z123", "123")

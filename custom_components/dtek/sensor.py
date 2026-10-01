@@ -120,26 +120,22 @@ CABINET_SENSOR_DESCRIPTIONS: tuple[DtekSensorEntityDescription, ...] = (
     ),
 )
 
-# Sensors that previous releases created but that DTEK does not expose. Their
-# registry entries are removed so they no longer linger as unavailable entities.
+# Sensors that earlier releases created but for which no DTEK endpoint exists at
+# all. These can never return, so their registry entries are removed. Cabinet
+# sensors are deliberately NOT treated this way: a missing value may simply be a
+# temporarily failing endpoint, and discarding the entity would lose its history.
 OBSOLETE_SENSOR_KEYS: frozenset[str] = frozenset({"day_reading", "night_reading"})
 
 
 @callback
-def _async_remove_stale_entities(
-    hass: HomeAssistant,
-    entry: DtekConfigEntry,
-    stale_keys: set[str],
-) -> None:
-    """Remove registry entries for sensors that are no longer provided."""
-    if not stale_keys:
-        return
+def _async_remove_obsolete_entities(hass: HomeAssistant, entry: DtekConfigEntry) -> None:
+    """Remove registry entries for sensors the integration no longer provides."""
     registry = er.async_get(hass)
     prefix = f"{entry.entry_id}_"
     for entity in er.async_entries_for_config_entry(registry, entry.entry_id):
         if entity.domain != "sensor":
             continue
-        if entity.unique_id.removeprefix(prefix) in stale_keys:
+        if entity.unique_id.removeprefix(prefix) in OBSOLETE_SENSOR_KEYS:
             registry.async_remove(entity.entity_id)
 
 
@@ -153,32 +149,44 @@ async def async_setup_entry(
     account = entry.runtime_data.account
     group = entry.runtime_data.group
 
-    descriptions = list(SENSOR_DESCRIPTIONS)
-    if entry.runtime_data.cabinet_enabled and coordinator.data is not None:
-        descriptions.extend(
-            description
-            for description in CABINET_SENSOR_DESCRIPTIONS
-            if description.value_fn(coordinator.data) is not None
+    _async_remove_obsolete_entities(hass, entry)
+
+    def _build(description: DtekSensorEntityDescription) -> DtekSensor:
+        return DtekSensor(
+            coordinator=coordinator,
+            description=description,
+            entry_id=entry.entry_id,
+            group=group,
+            account=account,
         )
 
-    created_keys = {description.key for description in descriptions}
-    stale_keys = {
-        description.key for description in CABINET_SENSOR_DESCRIPTIONS if description.key not in created_keys
-    } | OBSOLETE_SENSOR_KEYS
-    _async_remove_stale_entities(hass, entry, stale_keys)
+    async_add_entities([_build(description) for description in SENSOR_DESCRIPTIONS])
 
-    async_add_entities(
-        [
-            DtekSensor(
-                coordinator=coordinator,
-                description=description,
-                entry_id=entry.entry_id,
-                group=group,
-                account=account,
-            )
-            for description in descriptions
+    if not entry.runtime_data.cabinet_enabled:
+        return
+
+    # A cabinet field that is absent right now may just be a temporarily failing
+    # endpoint, so entities are added the first time a value actually appears
+    # rather than being decided once from the initial snapshot.
+    known_keys: set[str] = set()
+
+    @callback
+    def _async_add_available_cabinet_sensors() -> None:
+        state = coordinator.data
+        if state is None:
+            return
+        new_entities = [
+            _build(description)
+            for description in CABINET_SENSOR_DESCRIPTIONS
+            if description.key not in known_keys and description.value_fn(state) is not None
         ]
-    )
+        if not new_entities:
+            return
+        known_keys.update(entity.entity_description.key for entity in new_entities)
+        async_add_entities(new_entities)
+
+    _async_add_available_cabinet_sensors()
+    entry.async_on_unload(coordinator.async_add_listener(_async_add_available_cabinet_sensors))
 
 
 class DtekSensor(CoordinatorEntity[DtekDataUpdateCoordinator], SensorEntity):

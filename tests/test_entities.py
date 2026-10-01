@@ -111,9 +111,7 @@ def test_cabinet_sensors_only_created_when_data_available() -> None:
         balance=None,
     )
 
-    available = [
-        desc.key for desc in CABINET_SENSOR_DESCRIPTIONS if desc.value_fn(coordinator.data) is not None
-    ]
+    available = [desc.key for desc in CABINET_SENSOR_DESCRIPTIONS if desc.value_fn(coordinator.data) is not None]
 
     assert "customer_name" in available
     assert "eic" in available
@@ -162,9 +160,28 @@ async def test_calendar_events() -> None:
     assert "Network maintenance" in events[0].summary
 
 
+def _make_entry(coordinator: Any, cabinet_enabled: bool = True) -> MagicMock:
+    entry = MagicMock()
+    entry.entry_id = "test_entry"
+    entry.runtime_data.coordinator = coordinator
+    entry.runtime_data.account = "12345678"
+    entry.runtime_data.group = "GPV1.2"
+    entry.runtime_data.cabinet_enabled = cabinet_enabled
+    return entry
+
+
+def _registry_entry(entity_id: str, unique_id: str) -> MagicMock:
+    entity = MagicMock()
+    entity.entity_id = entity_id
+    entity.domain = "sensor"
+    entity.unique_id = unique_id
+    entity.config_entry_id = "test_entry"
+    return entity
+
+
 @pytest.mark.asyncio
-async def test_setup_entry_removes_stale_sensor_entities() -> None:
-    """Sensors that DTEK no longer provides are purged from the registry."""
+async def test_setup_entry_removes_only_obsolete_sensors() -> None:
+    """Sensors without any DTEK endpoint are purged; cabinet ones are kept."""
     from homeassistant.helpers import entity_registry as er
 
     from custom_components.dtek.sensor import async_setup_entry
@@ -172,45 +189,75 @@ async def test_setup_entry_removes_stale_sensor_entities() -> None:
     hass = MagicMock()
     hass.entity_registry = None
     registry = er.async_get(hass)
-
-    def _entry(entity_id: str, unique_id: str) -> MagicMock:
-        entity = MagicMock()
-        entity.entity_id = entity_id
-        entity.domain = "sensor"
-        entity.unique_id = unique_id
-        entity.config_entry_id = "test_entry"
-        return entity
-
     for entity_id, unique_id in (
         ("sensor.dtek_day_meter_reading", "test_entry_day_reading"),
         ("sensor.dtek_night_meter_reading", "test_entry_night_reading"),
         ("sensor.dtek_account_balance", "test_entry_balance"),
-        ("sensor.dtek_customer_name", "test_entry_customer_name"),
         ("sensor.dtek_queue_group", "test_entry_group"),
     ):
-        registry.entities[entity_id] = _entry(entity_id, unique_id)
+        registry.entities[entity_id] = _registry_entry(entity_id, unique_id)
 
     coordinator = MagicMock()
     coordinator.data = DtekState(group="GPV1.2", customer_name="Тестенко Т.Т.")
 
-    entry = MagicMock()
-    entry.entry_id = "test_entry"
-    entry.runtime_data.coordinator = coordinator
-    entry.runtime_data.account = "12345678"
-    entry.runtime_data.group = "GPV1.2"
-    entry.runtime_data.cabinet_enabled = True
-
     added: list[Any] = []
-    await async_setup_entry(hass, entry, lambda entities: added.extend(entities))
+    await async_setup_entry(hass, _make_entry(coordinator), lambda e: added.extend(e))
 
     remaining = set(registry.entities)
     assert "sensor.dtek_day_meter_reading" not in remaining
     assert "sensor.dtek_night_meter_reading" not in remaining
-    assert "sensor.dtek_account_balance" not in remaining
-    # Entities that still have data are kept.
-    assert "sensor.dtek_customer_name" in remaining
+    # A cabinet endpoint can fail transiently, so its entity must survive.
+    assert "sensor.dtek_account_balance" in remaining
     assert "sensor.dtek_queue_group" in remaining
 
     created = {sensor.entity_description.key for sensor in added}
     assert "customer_name" in created
     assert "balance" not in created
+
+
+@pytest.mark.asyncio
+async def test_cabinet_sensor_added_when_value_appears_later() -> None:
+    """A field that only becomes available later still gets an entity."""
+    from custom_components.dtek.coordinator import DtekDataUpdateCoordinator
+    from custom_components.dtek.sensor import async_setup_entry
+
+    hass = MagicMock()
+    hass.entity_registry = None
+
+    coordinator = DtekDataUpdateCoordinator(hass=hass, client=MagicMock(), group="GPV1.2")
+    coordinator.data = DtekState(group="GPV1.2")
+
+    added: list[Any] = []
+    await async_setup_entry(hass, _make_entry(coordinator), lambda e: added.extend(e))
+
+    assert {s.entity_description.key for s in added} == {d.key for d in SENSOR_DESCRIPTIONS}
+
+    # The cabinet endpoint recovers on a later refresh.
+    coordinator.data = DtekState(group="GPV1.2", balance=-12.5, customer_name="Тестенко Т.Т.")
+    coordinator.async_notify_listeners()
+
+    created = {sensor.entity_description.key for sensor in added}
+    assert "balance" in created
+    assert "customer_name" in created
+
+    # A further refresh must not duplicate the entities.
+    coordinator.async_notify_listeners()
+    keys = [sensor.entity_description.key for sensor in added]
+    assert len(keys) == len(set(keys))
+
+
+@pytest.mark.asyncio
+async def test_no_cabinet_sensors_without_account() -> None:
+    """Address-only entries never get cabinet entities."""
+    from custom_components.dtek.sensor import async_setup_entry
+
+    hass = MagicMock()
+    hass.entity_registry = None
+
+    coordinator = MagicMock()
+    coordinator.data = DtekState(group="GPV1.2", customer_name="Тестенко Т.Т.")
+
+    added: list[Any] = []
+    await async_setup_entry(hass, _make_entry(coordinator, cabinet_enabled=False), lambda e: added.extend(e))
+
+    assert {s.entity_description.key for s in added} == {d.key for d in SENSOR_DESCRIPTIONS}

@@ -39,6 +39,8 @@
       "invalid_auth": "Invalid phone number or password for DTEK Personal Cabinet.",
       "address_not_found": "City or street was not found on DTEK portal.",
       "house_not_found": "House number was not found in the DTEK street listing.",
+      "no_account": "The DTEK Personal Cabinet did not return an account for this login. Please verify your account in the DTEK portal and try again.",
+      "no_group": "The outage queue (GPV) could not be determined for this account. Please try again later or use manual queue entry.",
       "unknown": "An unexpected error occurred."
     },
     "abort": {
