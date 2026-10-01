@@ -42,11 +42,7 @@ def _async_persist_discovered_data(
     address. Entries created before those lookups existed keep stale or empty
     values, so they are refreshed here instead of on every coordinator update.
     """
-    updates = {
-        key: value
-        for key, value in discovered.items()
-        if value and entry.data.get(key) != value
-    }
+    updates = {key: value for key, value in discovered.items() if value and entry.data.get(key) != value}
     if not updates:
         return
     _LOGGER.debug("Updating DTEK config entry with resolved values: %s", sorted(updates))
