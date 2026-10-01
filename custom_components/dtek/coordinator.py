@@ -3,22 +3,52 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from datetime import datetime, timedelta
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import (
+    DTEK_TIMEZONE,
     DtekApiClient,
     DtekCabinetProfile,
     DtekConnectionError,
     DtekError,
+    DtekOutageEvent,
     DtekRateLimitError,
     DtekState,
+    ensure_dtek_timezone,
+    find_house_info,
+    parse_house_outage,
 )
 from .const import CABINET_DEFAULT_SITE, DEFAULT_SCAN_INTERVAL
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _merge_events(
+    house_events: list[DtekOutageEvent],
+    schedule_events: list[DtekOutageEvent],
+) -> list[DtekOutageEvent]:
+    """Combine both outage sources, dropping duplicate windows."""
+    merged: list[DtekOutageEvent] = []
+    seen: set[tuple[datetime, datetime, str]] = set()
+    for event in [*house_events, *schedule_events]:
+        # Normalise first so a naive timestamp cannot poison the comparisons
+        # below, and so duplicates are detected across both sources.
+        event = replace(
+            event,
+            start=ensure_dtek_timezone(event.start),
+            end=ensure_dtek_timezone(event.end),
+        )
+        key = (event.start, event.end, event.outage_type)
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(event)
+    merged.sort(key=lambda event: event.start)
+    return merged
 
 
 class DtekDataUpdateCoordinator(DataUpdateCoordinator[DtekState]):
@@ -95,6 +125,7 @@ class DtekDataUpdateCoordinator(DataUpdateCoordinator[DtekState]):
                     self.house_number = profile.house_number
 
             flags: dict[str, bool] = {}
+            house_events: list[DtekOutageEvent] = []
             if self.city and self.street:
                 lookup_result = await self.client.async_get_home_numbers(
                     city=self.city,
@@ -109,11 +140,21 @@ class DtekDataUpdateCoordinator(DataUpdateCoordinator[DtekState]):
                     "show_user_group": lookup_result.show_user_group,
                 }
                 # If house_number was provided, verify if group updated
-                if not (profile and profile.group) and self.house_number in lookup_result.houses:
-                    house_info = lookup_result.houses[self.house_number]
-                    if house_info.group and house_info.group != self.group:
+                house_info = find_house_info(lookup_result.houses, self.house_number)
+                if house_info is not None:
+                    if not (profile and profile.group) and house_info.group and house_info.group != self.group:
                         _LOGGER.info("DTEK queue updated from %s to %s", self.group, house_info.group)
                         self.group = house_info.group
+
+                    # getHomeNum is the only live source of outage windows; the
+                    # legacy schedule methods are retired on the Dnipro portal.
+                    house_outage = parse_house_outage(house_info)
+                    if house_outage is not None:
+                        house_events.append(house_outage)
+                else:
+                    # House numbers are sensitive (see diagnostics.py), so the
+                    # address itself is deliberately kept out of the log.
+                    _LOGGER.debug("Configured house not present in DTEK address list")
 
             # Fetch schedule events
             events = await self.client.async_get_schedule(
@@ -122,8 +163,9 @@ class DtekDataUpdateCoordinator(DataUpdateCoordinator[DtekState]):
                 street=self.street,
                 house=self.house_number,
             )
+            events = _merge_events(house_events, events)
 
-            now = datetime.now()
+            now = datetime.now(DTEK_TIMEZONE)
             current_outage = None
             next_outage = None
 
