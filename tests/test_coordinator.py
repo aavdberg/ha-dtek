@@ -7,13 +7,14 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from custom_components.dtek.api.exceptions import DtekConnectionError, DtekError, DtekRateLimitError
 from custom_components.dtek.api.models import (
     DtekAddressLookupResult,
     DtekCabinetProfile,
     DtekHouseInfo,
     DtekOutageEvent,
 )
-from custom_components.dtek.coordinator import DtekDataUpdateCoordinator
+from custom_components.dtek.coordinator import DtekDataUpdateCoordinator, UpdateFailed
 
 
 @pytest.mark.asyncio
@@ -168,3 +169,66 @@ async def test_coordinator_without_cabinet_leaves_fields_empty() -> None:
     assert state.customer_name is None
     assert state.meter_serial is None
     assert state.cabinet_authenticated is False
+
+
+@pytest.mark.asyncio
+async def test_coordinator_raises_update_failed_on_rate_limit() -> None:
+    """A 429 from the portal surfaces as UpdateFailed, not a crash."""
+    hass = MagicMock()
+    client = MagicMock()
+    client.async_get_schedule = AsyncMock(side_effect=DtekRateLimitError("429 Too Many Requests"))
+
+    coordinator = DtekDataUpdateCoordinator(hass=hass, client=client, group="GPV1.2")
+
+    with pytest.raises(UpdateFailed, match="rate limit"):
+        await coordinator._async_update_data()
+
+
+@pytest.mark.asyncio
+async def test_coordinator_raises_update_failed_on_connection_error() -> None:
+    """Network failures surface as UpdateFailed with a descriptive reason."""
+    hass = MagicMock()
+    client = MagicMock()
+    client.async_get_schedule = AsyncMock(side_effect=DtekConnectionError("connection reset"))
+
+    coordinator = DtekDataUpdateCoordinator(hass=hass, client=client, group="GPV1.2")
+
+    with pytest.raises(UpdateFailed, match="Cannot connect"):
+        await coordinator._async_update_data()
+
+
+@pytest.mark.asyncio
+async def test_coordinator_survives_cabinet_outage() -> None:
+    """A failing cabinet must not fail the whole update."""
+    hass = MagicMock()
+    client = MagicMock()
+    client.async_get_schedule = AsyncMock(return_value=[])
+    client.async_get_cabinet_profile = AsyncMock(side_effect=DtekConnectionError("cabinet down"))
+
+    coordinator = DtekDataUpdateCoordinator(
+        hass=hass,
+        client=client,
+        group="GPV1.2",
+        cabinet_token="token",
+        cabinet_account="12345678",
+    )
+
+    state = await coordinator._async_update_data()
+
+    # Outage data stays accurate even though cabinet enrichment failed.
+    assert state.group == "GPV1.2"
+    assert state.power_expected is True
+    assert state.customer_name is None
+
+
+@pytest.mark.asyncio
+async def test_coordinator_raises_update_failed_on_generic_api_error() -> None:
+    """Any other DtekError surfaces as UpdateFailed via the generic handler."""
+    hass = MagicMock()
+    client = MagicMock()
+    client.async_get_schedule = AsyncMock(side_effect=DtekError("unexpected payload"))
+
+    coordinator = DtekDataUpdateCoordinator(hass=hass, client=client, group="GPV1.2")
+
+    with pytest.raises(UpdateFailed, match="DTEK API error"):
+        await coordinator._async_update_data()
