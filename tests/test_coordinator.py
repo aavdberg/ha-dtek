@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from custom_components.dtek.api.exceptions import DtekConnectionError, DtekRateLimitError
+from custom_components.dtek.api.exceptions import DtekConnectionError, DtekError, DtekRateLimitError
 from custom_components.dtek.api.models import (
     DtekAddressLookupResult,
     DtekCabinetProfile,
@@ -219,3 +219,16 @@ async def test_coordinator_survives_cabinet_outage() -> None:
     assert state.group == "GPV1.2"
     assert state.power_expected is True
     assert state.customer_name is None
+
+
+@pytest.mark.asyncio
+async def test_coordinator_raises_update_failed_on_generic_api_error() -> None:
+    """Any other DtekError surfaces as UpdateFailed via the generic handler."""
+    hass = MagicMock()
+    client = MagicMock()
+    client.async_get_schedule = AsyncMock(side_effect=DtekError("unexpected payload"))
+
+    coordinator = DtekDataUpdateCoordinator(hass=hass, client=client, group="GPV1.2")
+
+    with pytest.raises(UpdateFailed, match="DTEK API error"):
+        await coordinator._async_update_data()
