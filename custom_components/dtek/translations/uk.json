@@ -90,17 +90,20 @@
       "eic": {
         "name": "EIC-код"
       },
+      "address": {
+        "name": "Зареєстрована адреса"
+      },
+      "object_type": {
+        "name": "Тип об'єкта"
+      },
+      "contract_capacity": {
+        "name": "Дозволена потужність"
+      },
       "meter_serial": {
         "name": "Номер лічильника"
       },
       "meter_type": {
         "name": "Тип лічильника"
-      },
-      "day_reading": {
-        "name": "Показання день"
-      },
-      "night_reading": {
-        "name": "Показання ніч"
       }
     },
     "calendar": {

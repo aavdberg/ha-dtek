@@ -39,6 +39,11 @@ Users often receive official DTEK Telegram notifications for scheduled maintenan
   - `sensor.dtek_outage_reason`: Detailed reason (e.g., *Scheduled maintenance*, *Stabilization schedule*, *Emergency repair*).
   - `sensor.dtek_group`: Associated queue group (e.g., `GPV1.2`).
 - **Calendar Platform (`calendar.dtek_outages`)**: Full calendar view of all planned maintenance windows and schedule intervals.
+- **Personal Cabinet Sensors** (created only when you sign in with a DTEK account, and only for the fields your account actually exposes):
+  - `sensor.dtek_customer_name`, `sensor.dtek_eic`, `sensor.dtek_address`, `sensor.dtek_object_type`, `sensor.dtek_contract_capacity`
+  - `sensor.dtek_meter_serial`, `sensor.dtek_meter_type`
+  - `sensor.dtek_balance` (derived from the account's debit and credit figures)
+- **Zero-Config Account Setup**: Signing in with your Personal Cabinet credentials resolves your account number, EIC code, registered address and queue group automatically — no manual city, street or house number entry required.
 - **Automatic Address Resolution**: Enter your settlement, street, and house number to automatically resolve your DTEK queue and local maintenance notices.
 - **Manual Queue Fallback**: Enter your queue (e.g. `GPV1.2`) directly if address lookup is temporarily unreachable.
 - **Multi-Region DSO Portals**:

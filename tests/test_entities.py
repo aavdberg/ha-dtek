@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -15,7 +16,11 @@ from custom_components.dtek.binary_sensor import (
     DtekBinarySensor,
 )
 from custom_components.dtek.calendar import DtekOutageCalendarEntity
-from custom_components.dtek.sensor import SENSOR_DESCRIPTIONS, DtekSensor
+from custom_components.dtek.sensor import (
+    CABINET_SENSOR_DESCRIPTIONS,
+    SENSOR_DESCRIPTIONS,
+    DtekSensor,
+)
 
 
 def test_power_expected_binary_sensor() -> None:
@@ -89,10 +94,33 @@ def test_dtek_sensors() -> None:
     assert sensors["next_outage"].native_value == next_outage.start
     assert sensors["restore_time"].native_value is None
     assert sensors["outage_reason"].native_value == "Substation maintenance"
-    assert sensors["balance"].native_value is None
-    assert sensors["customer_name"].native_value is None
-    assert sensors["eic"].native_value is None
-    assert sensors["meter_serial"].native_value is None
+    # Cabinet-only entities are not part of the base set.
+    assert "balance" not in sensors
+    assert "customer_name" not in sensors
+    assert "meter_serial" not in sensors
+
+
+def test_cabinet_sensors_only_created_when_data_available() -> None:
+    """Cabinet sensors are skipped for fields the account does not expose."""
+    coordinator = MagicMock()
+    coordinator.data = DtekState(
+        group="GPV1.2",
+        customer_name="Тестенко Т.Т.",
+        eic="62Z1234567890123",
+        meter_serial="04860803",
+        balance=None,
+    )
+
+    available = [
+        desc.key for desc in CABINET_SENSOR_DESCRIPTIONS if desc.value_fn(coordinator.data) is not None
+    ]
+
+    assert "customer_name" in available
+    assert "eic" in available
+    assert "meter_serial" in available
+    # No billing figures for this account, so no permanently unknown entity.
+    assert "balance" not in available
+    assert "meter_type" not in available
 
 
 @pytest.mark.asyncio
@@ -132,3 +160,57 @@ async def test_calendar_events() -> None:
     )
     assert len(events) == 1
     assert "Network maintenance" in events[0].summary
+
+
+@pytest.mark.asyncio
+async def test_setup_entry_removes_stale_sensor_entities() -> None:
+    """Sensors that DTEK no longer provides are purged from the registry."""
+    from homeassistant.helpers import entity_registry as er
+
+    from custom_components.dtek.sensor import async_setup_entry
+
+    hass = MagicMock()
+    hass.entity_registry = None
+    registry = er.async_get(hass)
+
+    def _entry(entity_id: str, unique_id: str) -> MagicMock:
+        entity = MagicMock()
+        entity.entity_id = entity_id
+        entity.domain = "sensor"
+        entity.unique_id = unique_id
+        entity.config_entry_id = "test_entry"
+        return entity
+
+    for entity_id, unique_id in (
+        ("sensor.dtek_day_meter_reading", "test_entry_day_reading"),
+        ("sensor.dtek_night_meter_reading", "test_entry_night_reading"),
+        ("sensor.dtek_account_balance", "test_entry_balance"),
+        ("sensor.dtek_customer_name", "test_entry_customer_name"),
+        ("sensor.dtek_queue_group", "test_entry_group"),
+    ):
+        registry.entities[entity_id] = _entry(entity_id, unique_id)
+
+    coordinator = MagicMock()
+    coordinator.data = DtekState(group="GPV1.2", customer_name="Тестенко Т.Т.")
+
+    entry = MagicMock()
+    entry.entry_id = "test_entry"
+    entry.runtime_data.coordinator = coordinator
+    entry.runtime_data.account = "12345678"
+    entry.runtime_data.group = "GPV1.2"
+    entry.runtime_data.cabinet_enabled = True
+
+    added: list[Any] = []
+    await async_setup_entry(hass, entry, lambda entities: added.extend(entities))
+
+    remaining = set(registry.entities)
+    assert "sensor.dtek_day_meter_reading" not in remaining
+    assert "sensor.dtek_night_meter_reading" not in remaining
+    assert "sensor.dtek_account_balance" not in remaining
+    # Entities that still have data are kept.
+    assert "sensor.dtek_customer_name" in remaining
+    assert "sensor.dtek_queue_group" in remaining
+
+    created = {sensor.entity_description.key for sensor in added}
+    assert "customer_name" in created
+    assert "balance" not in created

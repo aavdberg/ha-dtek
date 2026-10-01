@@ -21,6 +21,8 @@ from .endpoints import (
     METHOD_GET_STREETS,
     PATH_CABINET_AUTH_PERSON,
     PATH_CABINET_BALANCE,
+    PATH_CABINET_CHOICE_ACCOUNT,
+    PATH_CABINET_CHOICE_APART,
     PATH_CABINET_OBJECTS_INFO,
     PATH_CABINET_POWERTRACK,
     SHUTDOWNS_PATH,
@@ -33,7 +35,13 @@ from .exceptions import (
     DtekRateLimitError,
     DtekResponseError,
 )
-from .models import DtekAddressLookupResult, DtekCabinetUser, DtekHouseInfo, DtekOutageEvent
+from .models import (
+    DtekAddressLookupResult,
+    DtekCabinetProfile,
+    DtekCabinetUser,
+    DtekHouseInfo,
+    DtekOutageEvent,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -59,6 +67,82 @@ STREET_PREFIX_PATTERN = re.compile(
     r"^(вул\.|пров\.|просп\.|бульв\.|туп\.|узвіз|площа|пл\.|вулиця|провулок|проспект)\s*",
     re.IGNORECASE,
 )
+
+# The cabinet reports queue groups in Cyrillic (e.g. "ГПВ1.2") while the public
+# shutdowns portal uses the Latin transliteration ("GPV1.2").
+GROUP_CYRILLIC_TRANSLATION = str.maketrans({"Г": "G", "П": "P", "В": "V", "г": "G", "п": "P", "в": "V"})
+
+# Address strings from the cabinet look like
+# "с-ще Обухівка, вул. Незалежності буд. 1 Б".
+ADDRESS_HOUSE_PATTERN = re.compile(r"\s*(?:буд\.?|б\.)\s*", re.IGNORECASE)
+
+
+def normalize_group(raw: str) -> str:
+    """Normalise a queue group label to the Latin ``GPV<n>.<n>`` form."""
+    return raw.strip().translate(GROUP_CYRILLIC_TRANSLATION).upper()
+
+
+def _to_float(value: Any) -> float | None:
+    """Coerce a cabinet numeric field to float, tolerating strings and nulls."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int | float):
+        return float(value)
+    if isinstance(value, str):
+        cleaned = value.strip().replace(",", ".").replace(" ", "")
+        if not cleaned:
+            return None
+        try:
+            return float(cleaned)
+        except ValueError:
+            return None
+    return None
+
+
+def _clean_str(value: Any) -> str | None:
+    """Return a trimmed string, or None for empty/non-string values."""
+    if isinstance(value, str):
+        return value.strip() or None
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        return str(value)
+    return None
+
+
+def _format_capacity(value: Any) -> str | None:
+    """Format the contracted capacity (``demPerm``) as a kW value."""
+    capacity = _to_float(value)
+    if capacity is None:
+        return None
+    return f"{capacity:.2f}".rstrip("0").rstrip(".") + " kW"
+
+
+def parse_cabinet_address(address: str) -> tuple[str | None, str | None, str | None]:
+    """Split a cabinet address string into settlement, street and house number.
+
+    Returns ``(city, street, house_number)``; any part that cannot be determined
+    is returned as ``None``.
+    """
+    if not address or "," not in address:
+        return None, None, None
+
+    city_part, _, street_part = address.partition(",")
+    city = city_part.strip() or None
+
+    street_part = street_part.strip()
+    if not street_part:
+        return city, None, None
+
+    # Prefer an explicit "буд." separator, otherwise split before the first digit.
+    if ADDRESS_HOUSE_PATTERN.search(street_part):
+        street, house = ADDRESS_HOUSE_PATTERN.split(street_part, maxsplit=1)
+    else:
+        match = re.search(r"\s\d", street_part)
+        if not match:
+            return city, street_part or None, None
+        street, house = street_part[: match.start()], street_part[match.start() :]
+
+    house = house.strip().replace(" ", "")
+    return city, street.strip() or None, house or None
 
 
 def resolve_settlement_and_street(
@@ -120,6 +204,19 @@ class DtekApiClient:
     def base_url(self) -> str:
         """Return current base URL."""
         return self._base_url
+
+    def _cabinet_headers(self, token: str | None = None) -> dict[str, str]:
+        """Return headers for cabinet REST calls."""
+        headers = {
+            "User-Agent": DEFAULT_USER_AGENT,
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/plain, */*",
+            "Origin": self._cabinet_base_url,
+            "Referer": f"{self._cabinet_base_url}/",
+        }
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        return headers
 
     async def async_ensure_csrf_token(self, force_refresh: bool = False) -> str:
         """Fetch the shutdowns page to obtain session cookies and CSRF token."""
@@ -445,7 +542,9 @@ class DtekApiClient:
 
         primary_account = accounts[0] if accounts else None
         primary_eic = eic_codes[0] if eic_codes else None
-        customer_name = user_data.get("name") if isinstance(user_data, dict) else None
+        # The cabinet splits the account holder over surname/name/middle name.
+        name_parts = [user_data.get(part) for part in ("surname", "name", "middle_n")]
+        customer_name = " ".join(p.strip() for p in name_parts if isinstance(p, str) and p.strip()) or None
 
         return DtekCabinetUser(
             token=token,
@@ -461,32 +560,81 @@ class DtekApiClient:
         self,
         token: str,
         account: str | None = None,
-    ) -> list[dict[str, Any]]:
-        """Fetch registered objects, meters, and address info from cabinet."""
+    ) -> dict[str, Any]:
+        """Fetch customer, place and contract info for an account.
+
+        The cabinet returns a mapping shaped like
+        ``{"customer": {...}, "place": {...}, "serviceProviders": [...]}`` -- it is
+        not a list of objects, so the whole payload is returned for the caller to
+        pick fields from.
+        """
         url = f"{self._cabinet_base_url}{PATH_CABINET_OBJECTS_INFO}"
         payload: dict[str, Any] = {"token": token}
         if account:
             payload["account"] = account
 
-        headers = {
-            "User-Agent": DEFAULT_USER_AGENT,
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        }
         try:
             async with self._session.post(
-                url, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=20)
+                url,
+                json=payload,
+                headers=self._cabinet_headers(token),
+                timeout=aiohttp.ClientTimeout(total=20),
             ) as resp:
-                if resp.status == 200:
-                    data = await resp.json(content_type=None)
-                    if isinstance(data, dict):
-                        objects = data.get("objects") or data.get("data")
-                        if isinstance(objects, list):
-                            return objects
-                    elif isinstance(data, list):
-                        return data
+                if resp.status != 200:
+                    return {}
+                data = await resp.json(content_type=None)
         except Exception as err:
             _LOGGER.debug("Could not fetch cabinet objects info: %s", err)
+            return {}
+
+        if not isinstance(data, dict):
+            return {}
+        # Some deployments wrap the payload in a "data" envelope.
+        if "customer" not in data and isinstance(data.get("data"), dict):
+            return data["data"]
+        return data
+
+    async def async_get_cabinet_meters(
+        self,
+        token: str,
+        account: str,
+        site: str = "dnem",
+    ) -> list[dict[str, Any]]:
+        """Fetch the metering devices registered on an account.
+
+        The account must first be selected in the session via ``/api/choice-apart``;
+        the meter list is then returned by ``/api/entity/choice-account``.
+        """
+        headers = self._cabinet_headers(token)
+        try:
+            async with self._session.post(
+                f"{self._cabinet_base_url}{PATH_CABINET_CHOICE_APART}",
+                json={"token": token, "item": {"account": account}},
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=20),
+            ) as resp:
+                await resp.read()
+        except Exception as err:
+            _LOGGER.debug("Could not select cabinet account: %s", err)
+
+        try:
+            async with self._session.post(
+                f"{self._cabinet_base_url}{PATH_CABINET_CHOICE_ACCOUNT}",
+                json={"token": token, "account": account, "site": site},
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=20),
+            ) as resp:
+                if resp.status != 200:
+                    return []
+                data = await resp.json(content_type=None)
+        except Exception as err:
+            _LOGGER.debug("Could not fetch cabinet meters: %s", err)
+            return []
+
+        if isinstance(data, dict):
+            meters = data.get("meters")
+            if isinstance(meters, list):
+                return [m for m in meters if isinstance(m, dict)]
         return []
 
     async def async_get_cabinet_powertrack_schedule(
@@ -504,47 +652,131 @@ class DtekApiClient:
             "account": account,
             "site": site,
         }
-        headers = {
-            "User-Agent": DEFAULT_USER_AGENT,
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        }
         try:
             async with self._session.post(
-                url, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=20)
+                url,
+                json=payload,
+                headers=self._cabinet_headers(token),
+                timeout=aiohttp.ClientTimeout(total=20),
             ) as resp:
                 if resp.status == 200:
-                    return await resp.json(content_type=None)
+                    data = await resp.json(content_type=None)
+                    if isinstance(data, dict):
+                        return data
         except Exception as err:
             _LOGGER.debug("Could not fetch powertrack schedule: %s", err)
         return {}
+
+    async def async_get_cabinet_group(
+        self,
+        token: str,
+        eic: str,
+        account: str,
+        site: str = "dnem",
+    ) -> str | None:
+        """Return the normalised GPV queue group for an account, if available."""
+        data = await self.async_get_cabinet_powertrack_schedule(
+            token=token,
+            eic=eic,
+            account=account,
+            site=site,
+        )
+        raw = data.get("gpv")
+        if raw is None and isinstance(data.get("data"), dict):
+            raw = data["data"].get("gpv")
+        return normalize_group(raw) if isinstance(raw, str) else None
 
     async def async_get_cabinet_balance(
         self,
         token: str,
         account: str,
     ) -> float | None:
-        """Fetch account balance from cabinet."""
+        """Fetch account balance from cabinet.
+
+        The cabinet reports separate ``debet`` (owed) and ``credit`` (prepaid)
+        figures; the balance is expressed as credit minus debet so a negative
+        value means an outstanding amount.
+        """
         url = f"{self._cabinet_base_url}{PATH_CABINET_BALANCE}"
         payload = {"token": token, "account": account}
-        headers = {
-            "User-Agent": DEFAULT_USER_AGENT,
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        }
         try:
             async with self._session.post(
-                url, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=20)
+                url,
+                json=payload,
+                headers=self._cabinet_headers(token),
+                timeout=aiohttp.ClientTimeout(total=20),
             ) as resp:
-                if resp.status == 200:
-                    data = await resp.json(content_type=None)
-                    if isinstance(data, dict):
-                        # May be {"balance": 150.75} or {"data": {"balance": 150.75}}
-                        balance_val = data.get("balance")
-                        if balance_val is None and isinstance(data.get("data"), dict):
-                            balance_val = data["data"].get("balance")
-                        if balance_val is not None:
-                            return float(balance_val)
+                if resp.status != 200:
+                    return None
+                data = await resp.json(content_type=None)
         except Exception as err:
             _LOGGER.debug("Could not fetch cabinet balance: %s", err)
-        return None
+            return None
+
+        if not isinstance(data, dict):
+            return None
+
+        inner = data.get("data") if isinstance(data.get("data"), dict) else data
+        balance_val = inner.get("balance")
+        if balance_val is not None:
+            return _to_float(balance_val)
+
+        debet = _to_float(inner.get("debet"))
+        credit = _to_float(inner.get("credit"))
+        if debet is None and credit is None:
+            return None
+        return (credit or 0.0) - (debet or 0.0)
+
+    async def async_get_cabinet_profile(
+        self,
+        token: str,
+        account: str,
+        site: str = "dnem",
+    ) -> DtekCabinetProfile:
+        """Aggregate customer, contract, meter, balance and queue data for an account."""
+        info = await self.async_get_cabinet_objects_info(token=token, account=account)
+        customer = info.get("customer") if isinstance(info.get("customer"), dict) else {}
+        place = info.get("place") if isinstance(info.get("place"), dict) else {}
+
+        address = _clean_str(customer.get("address")) or _clean_str(place.get("address"))
+        city, street, house_number = parse_cabinet_address(address or "")
+        eic = _clean_str(customer.get("eic"))
+
+        meters = await self.async_get_cabinet_meters(token=token, account=account, site=site)
+        meter_serial = None
+        meter_type = None
+        if meters:
+            meter = meters[0]
+            # Serial numbers are returned with a leading underscore, e.g. "_04860803".
+            serial = _clean_str(meter.get("serialNumber")) or _clean_str(meter.get("serial_number"))
+            meter_serial = serial.lstrip("_") if serial else None
+            type_parts = [_clean_str(meter.get("type")), _clean_str(meter.get("construction"))]
+            meter_type = " ".join(p for p in type_parts if p) or None
+
+        balance = await self.async_get_cabinet_balance(token=token, account=account)
+
+        group = None
+        if eic:
+            group = await self.async_get_cabinet_group(
+                token=token,
+                eic=eic,
+                account=account,
+                site=site,
+            )
+
+        return DtekCabinetProfile(
+            account=_clean_str(customer.get("account")) or account,
+            customer_name=_clean_str(customer.get("name")),
+            eic=eic,
+            address=address,
+            object_type=_clean_str(customer.get("objectType")) or _clean_str(place.get("type")),
+            contract_capacity=_format_capacity(customer.get("demPerm")),
+            contract_date=_clean_str(customer.get("contractDate")),
+            city=city,
+            street=street,
+            house_number=house_number,
+            meter_serial=meter_serial,
+            meter_type=meter_type,
+            balance=balance,
+            group=group,
+        )

@@ -139,6 +139,33 @@ def _install_homeassistant_stubs() -> None:
     entity_platform = _ensure_module("homeassistant.helpers.entity_platform")
     entity_platform.AddEntitiesCallback = Any
 
+    entity_registry = _ensure_module("homeassistant.helpers.entity_registry")
+
+    class EntityRegistry:
+        def __init__(self) -> None:
+            self.entities: dict[str, Any] = {}
+
+        def async_remove(self, entity_id: str) -> None:
+            self.entities.pop(entity_id, None)
+
+    def async_get(hass: Any) -> Any:
+        registry = getattr(hass, "entity_registry", None)
+        if registry is None:
+            registry = EntityRegistry()
+            hass.entity_registry = registry
+        return registry
+
+    def async_entries_for_config_entry(registry: Any, entry_id: str) -> list[Any]:
+        return [
+            entity
+            for entity in registry.entities.values()
+            if entity.config_entry_id == entry_id
+        ]
+
+    entity_registry.EntityRegistry = EntityRegistry
+    entity_registry.async_get = async_get
+    entity_registry.async_entries_for_config_entry = async_entries_for_config_entry
+
     components = _ensure_module("homeassistant.components")
     components.__path__ = []
 

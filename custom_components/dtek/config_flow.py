@@ -29,6 +29,7 @@ from .const import (
     CONF_STREET,
     CONF_UPDATE_INTERVAL,
     DEFAULT_DSO,
+    DEFAULT_GROUP,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     MAX_SCAN_INTERVAL_MINUTES,
@@ -199,33 +200,18 @@ class DtekConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             try:
                 user = await client.async_cabinet_authenticate(phone=phone, password=password)
                 account = user.primary_account or "default"
-                eic = user.primary_eic or ""
-                group = "GPV1.1"
 
-                # If EIC is available, try to resolve exact GPV schedule
-                if eic:
-                    sched = await client.async_get_cabinet_powertrack_schedule(
-                        token=user.token,
-                        eic=eic,
-                        account=account,
-                    )
-                    if isinstance(sched, dict) and sched.get("data", {}).get("gpv"):
-                        group = str(sched["data"]["gpv"])
-
-                # Auto-detect address details from cabinet objects if available
-                objects = await client.async_get_cabinet_objects_info(
+                # The cabinet is authoritative: it yields the EIC, the registered
+                # address and the exact GPV queue for this account.
+                profile = await client.async_get_cabinet_profile(
                     token=user.token,
                     account=account,
                 )
-                city = None
-                street = None
-                house = None
-                if objects and isinstance(objects, list):
-                    first_obj = objects[0]
-                    if isinstance(first_obj, dict):
-                        city = first_obj.get("city")
-                        street = first_obj.get("street")
-                        house = first_obj.get("house") or first_obj.get("house_num")
+                eic = profile.eic or user.primary_eic or ""
+                group = profile.group or DEFAULT_GROUP
+                city = profile.city
+                street = profile.street
+                house = profile.house_number
 
                 unique_id = f"{self._dso}_cabinet_{account}".lower()
                 await self.async_set_unique_id(unique_id)
