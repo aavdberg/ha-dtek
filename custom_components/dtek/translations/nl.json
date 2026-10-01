@@ -90,17 +90,20 @@
       "eic": {
         "name": "EIC-code"
       },
+      "address": {
+        "name": "Geregistreerd adres"
+      },
+      "object_type": {
+        "name": "Objecttype"
+      },
+      "contract_capacity": {
+        "name": "Contractvermogen"
+      },
       "meter_serial": {
         "name": "Meternummer"
       },
       "meter_type": {
         "name": "Metertype"
-      },
-      "day_reading": {
-        "name": "Dagstand meter"
-      },
-      "night_reading": {
-        "name": "Nachtstand meter"
       }
     },
     "calendar": {

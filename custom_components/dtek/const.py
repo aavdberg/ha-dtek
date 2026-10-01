@@ -26,6 +26,7 @@ CABINET_BASE_URL: Final = "https://ok.dtek-dnem.com.ua"
 # Defaults
 DEFAULT_SCAN_INTERVAL: Final = timedelta(minutes=15)
 DEFAULT_DSO: Final = "dtek-dnem"
+DEFAULT_GROUP: Final = "GPV1.1"
 MIN_SCAN_INTERVAL_MINUTES: Final = 5
 MAX_SCAN_INTERVAL_MINUTES: Final = 60
 

@@ -26,6 +26,7 @@ class DtekRuntimeData:
     phone: str | None = None
     account: str | None = None
     eic: str | None = None
+    cabinet_enabled: bool = False
 
 
 # Type alias for ConfigEntry with runtime data

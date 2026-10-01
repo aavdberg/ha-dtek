@@ -12,7 +12,8 @@ from homeassistant.components.sensor import (
     SensorEntity,
     SensorEntityDescription,
 )
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -62,6 +63,12 @@ SENSOR_DESCRIPTIONS: tuple[DtekSensorEntityDescription, ...] = (
         icon="mdi:numeric",
         value_fn=lambda state: state.group,
     ),
+)
+
+# Entities below are only available when a Personal Cabinet account is linked.
+# They are created on demand: a field the cabinet does not expose for an account
+# would otherwise surface as a permanently "unknown" entity.
+CABINET_SENSOR_DESCRIPTIONS: tuple[DtekSensorEntityDescription, ...] = (
     DtekSensorEntityDescription(
         key="balance",
         translation_key="balance",
@@ -82,6 +89,24 @@ SENSOR_DESCRIPTIONS: tuple[DtekSensorEntityDescription, ...] = (
         value_fn=lambda state: state.eic,
     ),
     DtekSensorEntityDescription(
+        key="address",
+        translation_key="address",
+        icon="mdi:map-marker",
+        value_fn=lambda state: state.address,
+    ),
+    DtekSensorEntityDescription(
+        key="object_type",
+        translation_key="object_type",
+        icon="mdi:home-city-outline",
+        value_fn=lambda state: state.object_type,
+    ),
+    DtekSensorEntityDescription(
+        key="contract_capacity",
+        translation_key="contract_capacity",
+        icon="mdi:transmission-tower",
+        value_fn=lambda state: state.contract_capacity,
+    ),
+    DtekSensorEntityDescription(
         key="meter_serial",
         translation_key="meter_serial",
         icon="mdi:counter",
@@ -93,21 +118,29 @@ SENSOR_DESCRIPTIONS: tuple[DtekSensorEntityDescription, ...] = (
         icon="mdi:information",
         value_fn=lambda state: state.meter_type,
     ),
-    DtekSensorEntityDescription(
-        key="day_reading",
-        translation_key="day_reading",
-        icon="mdi:white-balance-sunny",
-        native_unit_of_measurement="kWh",
-        value_fn=lambda state: state.day_reading,
-    ),
-    DtekSensorEntityDescription(
-        key="night_reading",
-        translation_key="night_reading",
-        icon="mdi:weather-night",
-        native_unit_of_measurement="kWh",
-        value_fn=lambda state: state.night_reading,
-    ),
 )
+
+# Sensors that previous releases created but that DTEK does not expose. Their
+# registry entries are removed so they no longer linger as unavailable entities.
+OBSOLETE_SENSOR_KEYS: frozenset[str] = frozenset({"day_reading", "night_reading"})
+
+
+@callback
+def _async_remove_stale_entities(
+    hass: HomeAssistant,
+    entry: DtekConfigEntry,
+    stale_keys: set[str],
+) -> None:
+    """Remove registry entries for sensors that are no longer provided."""
+    if not stale_keys:
+        return
+    registry = er.async_get(hass)
+    prefix = f"{entry.entry_id}_"
+    for entity in er.async_entries_for_config_entry(registry, entry.entry_id):
+        if entity.domain != "sensor":
+            continue
+        if entity.unique_id.removeprefix(prefix) in stale_keys:
+            registry.async_remove(entity.entity_id)
 
 
 async def async_setup_entry(
@@ -120,6 +153,22 @@ async def async_setup_entry(
     account = entry.runtime_data.account
     group = entry.runtime_data.group
 
+    descriptions = list(SENSOR_DESCRIPTIONS)
+    if entry.runtime_data.cabinet_enabled and coordinator.data is not None:
+        descriptions.extend(
+            description
+            for description in CABINET_SENSOR_DESCRIPTIONS
+            if description.value_fn(coordinator.data) is not None
+        )
+
+    created_keys = {description.key for description in descriptions}
+    stale_keys = {
+        description.key
+        for description in CABINET_SENSOR_DESCRIPTIONS
+        if description.key not in created_keys
+    } | OBSOLETE_SENSOR_KEYS
+    _async_remove_stale_entities(hass, entry, stale_keys)
+
     async_add_entities(
         [
             DtekSensor(
@@ -129,7 +178,7 @@ async def async_setup_entry(
                 group=group,
                 account=account,
             )
-            for description in SENSOR_DESCRIPTIONS
+            for description in descriptions
         ]
     )
 

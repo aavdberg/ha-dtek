@@ -10,6 +10,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from .api import (
     DtekApiClient,
+    DtekCabinetProfile,
     DtekConnectionError,
     DtekError,
     DtekRateLimitError,
@@ -34,6 +35,7 @@ class DtekDataUpdateCoordinator(DataUpdateCoordinator[DtekState]):
         cabinet_token: str | None = None,
         cabinet_account: str | None = None,
         cabinet_eic: str | None = None,
+        cabinet_customer_name: str | None = None,
         update_interval: timedelta = DEFAULT_SCAN_INTERVAL,
     ) -> None:
         """Initialize coordinator."""
@@ -51,10 +53,41 @@ class DtekDataUpdateCoordinator(DataUpdateCoordinator[DtekState]):
         self.cabinet_token = cabinet_token
         self.cabinet_account = cabinet_account
         self.cabinet_eic = cabinet_eic
+        self.cabinet_customer_name = cabinet_customer_name
+
+    async def _async_fetch_cabinet_profile(self) -> DtekCabinetProfile | None:
+        """Fetch cabinet details, keeping the update alive if the cabinet is down."""
+        if not (self.cabinet_token and self.cabinet_account):
+            return None
+        try:
+            return await self.client.async_get_cabinet_profile(
+                token=self.cabinet_token,
+                account=self.cabinet_account,
+            )
+        except DtekError as err:
+            _LOGGER.debug("Could not refresh DTEK cabinet profile: %s", err)
+            return None
 
     async def _async_update_data(self) -> DtekState:
         """Fetch latest data from DTEK portal."""
         try:
+            profile = await self._async_fetch_cabinet_profile()
+
+            if profile:
+                # The cabinet is authoritative for the queue group and address.
+                if profile.group:
+                    if profile.group != self.group:
+                        _LOGGER.info("DTEK queue updated from %s to %s", self.group, profile.group)
+                    self.group = profile.group
+                if profile.eic:
+                    self.cabinet_eic = profile.eic
+                if not self.city and profile.city:
+                    self.city = profile.city
+                if not self.street and profile.street:
+                    self.street = profile.street
+                if not self.house_number and profile.house_number:
+                    self.house_number = profile.house_number
+
             flags: dict[str, bool] = {}
             if self.city and self.street:
                 lookup_result = await self.client.async_get_home_numbers(
@@ -70,7 +103,7 @@ class DtekDataUpdateCoordinator(DataUpdateCoordinator[DtekState]):
                     "show_user_group": lookup_result.show_user_group,
                 }
                 # If house_number was provided, verify if group updated
-                if self.house_number and self.house_number in lookup_result.houses:
+                if not (profile and profile.group) and self.house_number in lookup_result.houses:
                     house_info = lookup_result.houses[self.house_number]
                     if house_info.group and house_info.group != self.group:
                         _LOGGER.info("DTEK queue updated from %s to %s", self.group, house_info.group)
@@ -104,31 +137,6 @@ class DtekDataUpdateCoordinator(DataUpdateCoordinator[DtekState]):
 
             power_expected = current_outage is None
 
-            # Cabinet enrichment (if credentials provided)
-            balance = None
-            customer_name = None
-            eic = self.cabinet_eic
-            meter_serial = None
-            meter_type = None
-
-            if self.cabinet_token and self.cabinet_account:
-                balance = await self.client.async_get_cabinet_balance(
-                    token=self.cabinet_token,
-                    account=self.cabinet_account,
-                )
-                objects = await self.client.async_get_cabinet_objects_info(
-                    token=self.cabinet_token,
-                    account=self.cabinet_account,
-                )
-                if objects and isinstance(objects, list):
-                    first_obj = objects[0]
-                    if isinstance(first_obj, dict):
-                        customer_name = first_obj.get("customer_name") or first_obj.get("name")
-                        if not eic:
-                            eic = first_obj.get("eic")
-                        meter_serial = first_obj.get("meter_serial") or first_obj.get("meter")
-                        meter_type = first_obj.get("meter_type")
-
             return DtekState(
                 group=self.group,
                 power_expected=power_expected,
@@ -137,11 +145,14 @@ class DtekDataUpdateCoordinator(DataUpdateCoordinator[DtekState]):
                 events=events,
                 last_updated=now,
                 flags=flags,
-                balance=balance,
-                customer_name=customer_name,
-                eic=eic,
-                meter_serial=meter_serial,
-                meter_type=meter_type,
+                balance=profile.balance if profile else None,
+                customer_name=(profile.customer_name if profile else None) or self.cabinet_customer_name,
+                eic=(profile.eic if profile else None) or self.cabinet_eic,
+                meter_serial=profile.meter_serial if profile else None,
+                meter_type=profile.meter_type if profile else None,
+                contract_capacity=profile.contract_capacity if profile else None,
+                address=profile.address if profile else None,
+                object_type=profile.object_type if profile else None,
                 cabinet_authenticated=bool(self.cabinet_token),
             )
 

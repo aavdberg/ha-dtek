@@ -70,6 +70,26 @@ class DtekCabinetUser:
     meter_type: str | None = None
 
 
+@dataclass(slots=True, frozen=True)
+class DtekCabinetProfile:
+    """Customer, contract and metering details for a cabinet account."""
+
+    account: str | None = None
+    customer_name: str | None = None
+    eic: str | None = None
+    address: str | None = None
+    object_type: str | None = None
+    contract_capacity: str | None = None
+    contract_date: str | None = None
+    city: str | None = None
+    street: str | None = None
+    house_number: str | None = None
+    meter_serial: str | None = None
+    meter_type: str | None = None
+    balance: float | None = None
+    group: str | None = None
+
+
 @dataclass(slots=True)
 class DtekState:
     """Aggregated state for a configured DTEK location."""
@@ -82,11 +102,11 @@ class DtekState:
     last_updated: datetime = field(default_factory=datetime.now)
     flags: dict[str, bool] = field(default_factory=dict)
     balance: float | None = None
-    day_reading: float | None = None
-    night_reading: float | None = None
     customer_name: str | None = None
     eic: str | None = None
     meter_serial: str | None = None
     meter_type: str | None = None
     contract_capacity: str | None = None
+    address: str | None = None
+    object_type: str | None = None
     cabinet_authenticated: bool = False

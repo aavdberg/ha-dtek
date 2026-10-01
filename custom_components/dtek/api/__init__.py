@@ -14,6 +14,7 @@ from .exceptions import (
 )
 from .models import (
     DtekAddressLookupResult,
+    DtekCabinetProfile,
     DtekCabinetUser,
     DtekHouseInfo,
     DtekOutageEvent,
@@ -25,6 +26,7 @@ __all__ = [
     "DtekAddressNotFoundError",
     "DtekApiClient",
     "DtekAuthError",
+    "DtekCabinetProfile",
     "DtekCabinetUser",
     "DtekConnectionError",
     "DtekCsrfError",

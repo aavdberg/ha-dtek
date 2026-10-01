@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import aiohttp
 import pytest
 
-from custom_components.dtek.api.client import DtekApiClient
+from custom_components.dtek.api.client import DtekApiClient, parse_cabinet_address
 from custom_components.dtek.api.exceptions import (
     DtekAddressNotFoundError,
     DtekAuthError,
@@ -218,3 +218,164 @@ async def test_cabinet_balance_success() -> None:
     balance = await client.async_get_cabinet_balance("secret_token", "12345678")
 
     assert balance == 150.75
+
+
+@pytest.mark.asyncio
+async def test_cabinet_authenticate_real_response_shape() -> None:
+    """Login response puts user/accounts at the root and splits the name."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    mock_resp_data = {
+        "status": "success",
+        "accounts": [{"account": "100000000000", "name": None, "address": None}],
+        "user": {
+            "token": "secret_cabinet_jwt_token",
+            "name": "Тест",
+            "surname": "Тестенко",
+            "middle_n": "Тестович",
+            "phone": "+380501112233",
+        },
+    }
+    session.post = MagicMock(return_value=MockResponse(status=200, json_data=mock_resp_data))
+
+    client = DtekApiClient(session=session)
+    user = await client.async_cabinet_authenticate("+380501112233", "pwd")
+
+    assert user.token == "secret_cabinet_jwt_token"
+    assert user.primary_account == "100000000000"
+    assert user.primary_eic is None
+    assert user.customer_name == "Тестенко Тест Тестович"
+
+
+@pytest.mark.asyncio
+async def test_cabinet_objects_info_returns_mapping() -> None:
+    """objects/info returns a customer/place mapping rather than a list."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    payload = {
+        "customer": {"account": "100000000000", "eic": "62Z1234567890123"},
+        "place": {"address": "с-ще Тестове, вул. Тестова буд. 1 Б"},
+        "status": "success",
+    }
+    session.post = MagicMock(return_value=MockResponse(status=200, json_data=payload))
+
+    client = DtekApiClient(session=session)
+    info = await client.async_get_cabinet_objects_info("token", "100000000000")
+
+    assert info["customer"]["eic"] == "62Z1234567890123"
+
+
+@pytest.mark.asyncio
+async def test_cabinet_balance_from_debet_and_credit() -> None:
+    """Balance is derived from credit minus debet when no balance field exists."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    payload = {"data": {"debet": "120.50", "credit": "20.00"}, "status": "success"}
+    session.post = MagicMock(return_value=MockResponse(status=200, json_data=payload))
+
+    client = DtekApiClient(session=session)
+    assert await client.async_get_cabinet_balance("token", "123") == -100.5
+
+
+@pytest.mark.asyncio
+async def test_cabinet_balance_none_when_empty() -> None:
+    """A cabinet account without billing figures yields no balance."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    payload = {"data": {"debet": None, "credit": None}, "items": [], "status": "success"}
+    session.post = MagicMock(return_value=MockResponse(status=200, json_data=payload))
+
+    client = DtekApiClient(session=session)
+    assert await client.async_get_cabinet_balance("token", "123") is None
+
+
+@pytest.mark.asyncio
+async def test_cabinet_group_normalises_cyrillic() -> None:
+    """The cabinet reports the queue in Cyrillic; it is normalised to Latin."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    session.post = MagicMock(
+        return_value=MockResponse(status=200, json_data={"status": "success", "gpv": "ГПВ1.2"})
+    )
+
+    client = DtekApiClient(session=session)
+    group = await client.async_get_cabinet_group("token", "62Z123", "123")
+
+    assert group == "GPV1.2"
+
+
+@pytest.mark.asyncio
+async def test_cabinet_meters_extracted_from_choice_account() -> None:
+    """Meter details come from the account selection endpoint."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    responses = [
+        MockResponse(status=200, json_data={"status": "success"}),
+        MockResponse(
+            status=200,
+            json_data={
+                "meters": [
+                    {
+                        "type": "GAMA",
+                        "construction": "G3M 144.230",
+                        "serialNumber": "_04860803",
+                    }
+                ]
+            },
+        ),
+    ]
+    session.post = MagicMock(side_effect=responses)
+
+    client = DtekApiClient(session=session)
+    meters = await client.async_get_cabinet_meters("token", "123")
+
+    assert meters[0]["serialNumber"] == "_04860803"
+
+
+@pytest.mark.asyncio
+async def test_cabinet_profile_aggregates_all_sources() -> None:
+    """The profile combines customer info, meters, balance and queue group."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    client = DtekApiClient(session=session)
+    client.async_get_cabinet_objects_info = AsyncMock(
+        return_value={
+            "customer": {
+                "account": "100000000000",
+                "name": "Тестенко Т.Т.",
+                "address": "с-ще Тестове, вул. Тестова буд. 1 Б",
+                "objectType": "Житловий будинок",
+                "demPerm": "40.2000000",
+                "contractDate": "24.10.2024",
+                "eic": "62Z1234567890123",
+            },
+            "place": {"address": "с-ще Тестове, вул. Тестова буд. 1 Б"},
+        }
+    )
+    client.async_get_cabinet_meters = AsyncMock(
+        return_value=[{"type": "GAMA", "construction": "G3M 144.230", "serialNumber": "_04860803"}]
+    )
+    client.async_get_cabinet_balance = AsyncMock(return_value=-12.5)
+    client.async_get_cabinet_group = AsyncMock(return_value="GPV1.2")
+
+    profile = await client.async_get_cabinet_profile("token", "100000000000")
+
+    assert profile.customer_name == "Тестенко Т.Т."
+    assert profile.eic == "62Z1234567890123"
+    assert profile.meter_serial == "04860803"
+    assert profile.meter_type == "GAMA G3M 144.230"
+    assert profile.contract_capacity == "40.2 kW"
+    assert profile.object_type == "Житловий будинок"
+    assert profile.city == "с-ще Тестове"
+    assert profile.street == "вул. Тестова"
+    assert profile.house_number == "1Б"
+    assert profile.balance == -12.5
+    assert profile.group == "GPV1.2"
+
+
+def test_parse_cabinet_address_variants() -> None:
+    """Addresses with and without an explicit house marker are split correctly."""
+    assert parse_cabinet_address("с-ще Тестове, вул. Тестова буд. 1 Б") == (
+        "с-ще Тестове",
+        "вул. Тестова",
+        "1Б",
+    )
+    assert parse_cabinet_address("м. Дніпро, вул. Центральна 12") == (
+        "м. Дніпро",
+        "вул. Центральна",
+        "12",
+    )
+    assert parse_cabinet_address("") == (None, None, None)

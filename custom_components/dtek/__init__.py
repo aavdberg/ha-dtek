@@ -31,6 +31,28 @@ from .models import DtekConfigEntry, DtekRuntimeData
 _LOGGER = logging.getLogger(__name__)
 
 
+def _async_persist_discovered_data(
+    hass: HomeAssistant,
+    entry: DtekConfigEntry,
+    discovered: dict[str, str | None],
+) -> None:
+    """Write values resolved at runtime back to the config entry.
+
+    The Personal Cabinet is authoritative for the queue group, EIC code and
+    address. Entries created before those lookups existed keep stale or empty
+    values, so they are refreshed here instead of on every coordinator update.
+    """
+    updates = {
+        key: value
+        for key, value in discovered.items()
+        if value and entry.data.get(key) != value
+    }
+    if not updates:
+        return
+    _LOGGER.debug("Updating DTEK config entry with resolved values: %s", sorted(updates))
+    hass.config_entries.async_update_entry(entry, data={**entry.data, **updates})
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: DtekConfigEntry) -> bool:
     """Set up DTEK Outages from a config entry."""
     dso = entry.data.get(CONF_DSO, DEFAULT_DSO)
@@ -48,10 +70,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: DtekConfigEntry) -> bool
     client = DtekApiClient(session=session, base_url=base_url)
 
     cabinet_token = None
-    if phone and password:
+    cabinet_customer_name = None
+    cabinet_enabled = bool(phone and password)
+    if cabinet_enabled:
         try:
             user = await client.async_cabinet_authenticate(phone=phone, password=password)
             cabinet_token = user.token
+            cabinet_customer_name = user.customer_name
             if not account and user.primary_account:
                 account = user.primary_account
             if not eic and user.primary_eic:
@@ -75,22 +100,37 @@ async def async_setup_entry(hass: HomeAssistant, entry: DtekConfigEntry) -> bool
         cabinet_token=cabinet_token,
         cabinet_account=account,
         cabinet_eic=eic,
+        cabinet_customer_name=cabinet_customer_name,
         update_interval=scan_interval,
     )
 
     await coordinator.async_config_entry_first_refresh()
 
+    _async_persist_discovered_data(
+        hass,
+        entry,
+        {
+            CONF_GROUP: coordinator.group,
+            CONF_CITY: coordinator.city,
+            CONF_STREET: coordinator.street,
+            CONF_HOUSE_NUMBER: coordinator.house_number,
+            CONF_EIC: coordinator.cabinet_eic,
+            CONF_ACCOUNT: account,
+        },
+    )
+
     entry.runtime_data = DtekRuntimeData(
         client=client,
         coordinator=coordinator,
         dso=dso,
-        group=group,
-        city=city,
-        street=street,
-        house_number=house_number,
+        group=coordinator.group,
+        city=coordinator.city,
+        street=coordinator.street,
+        house_number=coordinator.house_number,
         phone=phone,
         account=account,
-        eic=eic,
+        eic=coordinator.cabinet_eic,
+        cabinet_enabled=cabinet_enabled,
     )
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
