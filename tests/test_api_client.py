@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import aiohttp
 import pytest
 
-from custom_components.dtek.api.client import DtekApiClient, parse_cabinet_address
+from custom_components.dtek.api.client import MAX_RETRIES, DtekApiClient, parse_cabinet_address
 from custom_components.dtek.api.exceptions import (
     DtekAddressNotFoundError,
     DtekAuthError,
@@ -377,3 +377,139 @@ def test_parse_cabinet_address_variants() -> None:
         "12",
     )
     assert parse_cabinet_address("") == (None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_post_ajax_retries_with_backoff_on_rate_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A 429 is retried with exponential backoff before succeeding."""
+    delays: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        delays.append(seconds)
+
+    monkeypatch.setattr("custom_components.dtek.api.client.asyncio.sleep", fake_sleep)
+
+    session = MagicMock(spec=aiohttp.ClientSession)
+    session.cookie_jar = []
+    responses = [
+        MockResponse(status=429),
+        MockResponse(status=429),
+        MockResponse(status=200, json_data={"data": "ok"}),
+    ]
+    session.post = MagicMock(side_effect=responses)
+
+    client = DtekApiClient(session=session)
+    client._csrf_token = "token"
+
+    result = await client._async_post_ajax({"method": "getSchedule"})
+
+    assert result == {"data": "ok"}
+    assert session.post.call_count == 3
+    # Two backoffs, growing exponentially: ~1s then ~2s plus jitter of 0.1-0.5.
+    assert len(delays) == 2
+    assert 1.1 <= delays[0] <= 1.5
+    assert 2.1 <= delays[1] <= 2.5
+    assert delays[1] > delays[0]
+
+
+@pytest.mark.asyncio
+async def test_post_ajax_raises_rate_limit_after_max_retries(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Persistent 429s give up after MAX_RETRIES and raise."""
+    delays: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        delays.append(seconds)
+
+    monkeypatch.setattr("custom_components.dtek.api.client.asyncio.sleep", fake_sleep)
+
+    session = MagicMock(spec=aiohttp.ClientSession)
+    session.cookie_jar = []
+    session.post = MagicMock(return_value=MockResponse(status=429))
+
+    client = DtekApiClient(session=session)
+    client._csrf_token = "token"
+
+    with pytest.raises(DtekRateLimitError, match="maximum retries"):
+        await client._async_post_ajax({"method": "getSchedule"})
+
+    # Initial attempt plus MAX_RETRIES retries, so MAX_RETRIES backoffs.
+    assert session.post.call_count == MAX_RETRIES + 1
+    assert len(delays) == MAX_RETRIES
+
+
+@pytest.mark.asyncio
+async def test_post_ajax_retries_on_network_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Network failures are retried with backoff before succeeding."""
+    delays: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        delays.append(seconds)
+
+    monkeypatch.setattr("custom_components.dtek.api.client.asyncio.sleep", fake_sleep)
+
+    session = MagicMock(spec=aiohttp.ClientSession)
+    session.cookie_jar = []
+    session.post = MagicMock(
+        side_effect=[
+            aiohttp.ClientConnectionError("connection reset"),
+            MockResponse(status=200, json_data={"data": "ok"}),
+        ]
+    )
+
+    client = DtekApiClient(session=session)
+    client._csrf_token = "token"
+
+    result = await client._async_post_ajax({"method": "getSchedule"})
+
+    assert result == {"data": "ok"}
+    assert len(delays) == 1
+
+
+@pytest.mark.asyncio
+async def test_post_ajax_raises_connection_error_after_max_retries(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Persistent network failures give up and raise DtekConnectionError."""
+
+    async def fake_sleep(seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr("custom_components.dtek.api.client.asyncio.sleep", fake_sleep)
+
+    session = MagicMock(spec=aiohttp.ClientSession)
+    session.cookie_jar = []
+    session.post = MagicMock(side_effect=aiohttp.ClientConnectionError("network down"))
+
+    client = DtekApiClient(session=session)
+    client._csrf_token = "token"
+
+    with pytest.raises(DtekConnectionError, match="Connection failed"):
+        await client._async_post_ajax({"method": "getSchedule"})
+
+    assert session.post.call_count == MAX_RETRIES + 1
+
+
+@pytest.mark.asyncio
+async def test_post_ajax_retries_on_server_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """HTTP 5xx is retried with backoff before succeeding."""
+    delays: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        delays.append(seconds)
+
+    monkeypatch.setattr("custom_components.dtek.api.client.asyncio.sleep", fake_sleep)
+
+    session = MagicMock(spec=aiohttp.ClientSession)
+    session.cookie_jar = []
+    session.post = MagicMock(
+        side_effect=[
+            MockResponse(status=503),
+            MockResponse(status=200, json_data={"data": "ok"}),
+        ]
+    )
+
+    client = DtekApiClient(session=session)
+    client._csrf_token = "token"
+
+    result = await client._async_post_ajax({"method": "getSchedule"})
+
+    assert result == {"data": "ok"}
+    assert len(delays) == 1
