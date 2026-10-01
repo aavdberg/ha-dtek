@@ -9,6 +9,7 @@ SHUTDOWNS_PATH: Final = "/ua/shutdowns"
 
 # AJAX methods
 METHOD_GET_HOME_NUM: Final = "getHomeNum"
+METHOD_GET_STREETS: Final = "getStreets"
 METHOD_GET_SCHEDULE: Final = "getSchedule"
 METHOD_GET_FACT: Final = "getFact"
 METHOD_GET_PLAN: Final = "getPlan"

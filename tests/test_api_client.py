@@ -124,3 +124,31 @@ async def test_get_home_numbers_not_found() -> None:
 
     with pytest.raises(DtekAddressNotFoundError):
         await client.async_get_home_numbers(city="Nonexistent", street="Fake")
+
+
+def test_resolve_settlement_and_street() -> None:
+    """Test resolving plain address inputs against streets map."""
+    from custom_components.dtek.api.client import resolve_settlement_and_street
+
+    streets_map = {
+        "с-ще Прикладне": ["вул. Миру", "вул. Шевченка"],
+        "м. Дніпро": ["вул. Центральна", "просп. Поля"],
+        "с. Степове": ["пров. Сонячний"],
+    }
+
+    # Plain city and street without prefixes
+    resolved = resolve_settlement_and_street("Прикладне", "Миру", streets_map)
+    assert resolved == ("с-ще Прикладне", "вул. Миру")
+
+    # City with prefix and street without
+    resolved = resolve_settlement_and_street("м. Дніпро", "Центральна", streets_map)
+    assert resolved == ("м. Дніпро", "вул. Центральна")
+
+    # Both with prefixes
+    resolved = resolve_settlement_and_street("с. Степове", "пров. Сонячний", streets_map)
+    assert resolved == ("с. Степове", "пров. Сонячний")
+
+    # Non-existent
+    resolved = resolve_settlement_and_street("Невідоме", "Невідома", streets_map)
+    assert resolved is None
+

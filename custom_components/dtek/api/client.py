@@ -17,6 +17,7 @@ from .endpoints import (
     METHOD_GET_HOME_NUM,
     METHOD_GET_PLAN,
     METHOD_GET_SCHEDULE,
+    METHOD_GET_STREETS,
     SHUTDOWNS_PATH,
 )
 from .exceptions import (
@@ -37,8 +38,59 @@ MAX_RETRIES = 3
 INITIAL_BACKOFF = 1.0
 
 # Regex patterns for CSRF token
-CSRF_META_PATTERN = re.compile(r'<meta\s+name=["\']csrf-token["\']\s+content=["\']([^"\']+)["\']', re.IGNORECASE)
+CSRF_META_PATTERN = re.compile(
+    r'<meta\s+[^>]*name=["\']csrf-token["\'][^>]*content=["\']([^"\']+)["\']|'
+    r'<meta\s+[^>]*content=["\']([^"\']+)["\'][^>]*name=["\']csrf-token["\']',
+    re.IGNORECASE,
+)
 CSRF_JS_PATTERN = re.compile(r'["\']csrf-token["\']\s*:\s*["\']([^"\']+)["\']', re.IGNORECASE)
+
+SETTLEMENT_PREFIX_PATTERN = re.compile(
+    r"^(с-ще|смт|м\.|с\.|тг|селище|село|місто)\s*",
+    re.IGNORECASE,
+)
+STREET_PREFIX_PATTERN = re.compile(
+    r"^(вул\.|пров\.|просп\.|бульв\.|туп\.|узвіз|площа|пл\.|вулиця|провулок|проспект)\s*",
+    re.IGNORECASE,
+)
+
+
+def resolve_settlement_and_street(
+    input_city: str,
+    input_street: str,
+    streets_map: dict[str, list[str]],
+) -> tuple[str, str] | None:
+    """Resolve user input to exact DTEK settlement and street names."""
+    clean_input_city = SETTLEMENT_PREFIX_PATTERN.sub("", input_city).strip().lower()
+    clean_input_street = STREET_PREFIX_PATTERN.sub("", input_street).strip().lower()
+
+    # Step 1: find candidate settlements
+    candidate_cities: list[str] = []
+    for c in streets_map:
+        clean_c = SETTLEMENT_PREFIX_PATTERN.sub("", c).strip().lower()
+        if clean_c == clean_input_city:
+            candidate_cities.append(c)
+
+    if not candidate_cities:
+        for c in streets_map:
+            clean_c = SETTLEMENT_PREFIX_PATTERN.sub("", c).strip().lower()
+            if clean_input_city in clean_c:
+                candidate_cities.append(c)
+
+    # Step 2: match street in candidate settlements
+    for c in candidate_cities:
+        for s in streets_map.get(c, []):
+            clean_s = STREET_PREFIX_PATTERN.sub("", s).strip().lower()
+            if clean_s == clean_input_street:
+                return c, s
+
+    for c in candidate_cities:
+        for s in streets_map.get(c, []):
+            clean_s = STREET_PREFIX_PATTERN.sub("", s).strip().lower()
+            if clean_input_street in clean_s:
+                return c, s
+
+    return None
 
 
 class DtekApiClient:
@@ -53,6 +105,7 @@ class DtekApiClient:
         self._session = session
         self._base_url = base_url.rstrip("/")
         self._csrf_token: str | None = None
+        self._streets_cache: dict[str, list[str]] | None = None
 
     @property
     def base_url(self) -> str:
@@ -83,16 +136,31 @@ class DtekApiClient:
             raise DtekConnectionError(f"Connection error while fetching DTEK portal: {err}") from err
 
         # Extract CSRF token
-        match = CSRF_META_PATTERN.search(text) or CSRF_JS_PATTERN.search(text)
-        if not match:
+        match = CSRF_META_PATTERN.search(text)
+        if match:
+            self._csrf_token = match.group(1) or match.group(2)
+        elif js_match := CSRF_JS_PATTERN.search(text):
+            self._csrf_token = js_match.group(1)
+        else:
             # Check cookies as fallback
             for cookie in self._session.cookie_jar:
                 if "csrf" in cookie.key.lower() or "xsrf" in cookie.key.lower():
                     self._csrf_token = cookie.value
-                    return self._csrf_token
-            raise DtekCsrfError("Could not find CSRF token in DTEK portal HTML or cookies")
+                    break
+            if not self._csrf_token:
+                raise DtekCsrfError("Could not find CSRF token in DTEK portal HTML or cookies")
 
-        self._csrf_token = match.group(1)
+        # Cache streets from HTML if embedded
+        if not self._streets_cache:
+            streets_match = re.search(r"DisconSchedule\.streets\s*=\s*(\{.*?\});", text)
+            if streets_match:
+                try:
+                    import json
+
+                    self._streets_cache = json.loads(streets_match.group(1))
+                except Exception:
+                    pass
+
         return self._csrf_token
 
     async def _async_post_ajax(
@@ -163,20 +231,53 @@ class DtekApiClient:
                 return await self._async_post_ajax(data, retry_count + 1)
             raise DtekConnectionError(f"Connection failed to DTEK endpoint: {err}") from err
 
+    async def async_get_streets(self, force_refresh: bool = False) -> dict[str, list[str]]:
+        """Fetch all settlements and streets from DTEK portal."""
+        if self._streets_cache and not force_refresh:
+            return self._streets_cache
+
+        payload: dict[str, Any] = {"method": METHOD_GET_STREETS}
+        try:
+            data = await self._async_post_ajax(payload)
+            if isinstance(data, dict) and "streets" in data and isinstance(data["streets"], dict):
+                self._streets_cache = data["streets"]
+                return self._streets_cache
+        except Exception as err:
+            _LOGGER.debug("Could not fetch streets list via AJAX: %s", err)
+
+        return self._streets_cache or {}
+
     async def async_get_home_numbers(
         self,
         city: str,
         street: str,
         update_fact: str | None = None,
+        auto_resolve: bool = True,
     ) -> DtekAddressLookupResult:
         """Fetch house numbers and queue mapping for a city and street."""
+        resolved_city = city
+        resolved_street = street
+
+        if auto_resolve:
+            try:
+                streets_map = await self.async_get_streets()
+                if streets_map:
+                    resolved = resolve_settlement_and_street(city, street, streets_map)
+                    if resolved:
+                        resolved_city, resolved_street = resolved
+            except Exception as err:
+                _LOGGER.debug("Address resolution failed or skipped: %s", err)
+
         payload: dict[str, Any] = {
             "method": METHOD_GET_HOME_NUM,
-            "city": city,
-            "street": street,
+            "data[0][name]": "city",
+            "data[0][value]": resolved_city,
+            "data[1][name]": "street",
+            "data[1][value]": resolved_street,
         }
         if update_fact:
-            payload["updateFact"] = update_fact
+            payload["data[2][name]"] = "updateFact"
+            payload["data[2][value]"] = update_fact
 
         data = await self._async_post_ajax(payload)
 
@@ -190,10 +291,16 @@ class DtekApiClient:
             show_table_plan=bool(data.get("showTablePlan", False)),
             show_table_fact=bool(data.get("showTableFact", False)),
             show_user_group=bool(data.get("showUserGroup", False)),
+            resolved_city=resolved_city,
+            resolved_street=resolved_street,
         )
 
+        raw_houses = data.get("data")
+        if not isinstance(raw_houses, dict):
+            raw_houses = data
+
         houses: dict[str, DtekHouseInfo] = {}
-        for key, val in data.items():
+        for key, val in raw_houses.items():
             if not isinstance(val, dict):
                 continue
 

@@ -103,13 +103,30 @@ class DtekConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     street=self._street,
                 )
 
+                if lookup.resolved_city:
+                    self._city = lookup.resolved_city
+                if lookup.resolved_street:
+                    self._street = lookup.resolved_street
+
                 # Look for matching house number (handle formatting differences such as slashes or letters)
                 matched_house = None
-                normalized_input = self._house_number.replace(" ", "").lower()
+                normalized_input = (
+                    self._house_number.replace(" ", "")
+                    .replace("/", "")
+                    .lower()
+                    .replace("b", "б")
+                    .replace("a", "а")
+                )
 
                 for house_key, house_info in lookup.houses.items():
-                    norm_key = house_key.replace(" ", "").replace("/", "").lower()
-                    if norm_key == normalized_input.replace("/", "") or house_key == self._house_number:
+                    norm_key = (
+                        house_key.replace(" ", "")
+                        .replace("/", "")
+                        .lower()
+                        .replace("b", "б")
+                        .replace("a", "а")
+                    )
+                    if norm_key == normalized_input or house_key == self._house_number:
                         matched_house = house_info
                         self._house_number = house_key
                         break

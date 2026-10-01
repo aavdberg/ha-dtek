@@ -31,6 +31,8 @@ class DtekAddressLookupResult:
     show_table_fact: bool = False
     show_user_group: bool = False
     houses: dict[str, DtekHouseInfo] = field(default_factory=dict)
+    resolved_city: str | None = None
+    resolved_street: str | None = None
 
 
 @dataclass(slots=True, frozen=True)
