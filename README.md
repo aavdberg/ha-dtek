@@ -75,6 +75,10 @@ Be aware that it is not yet confirmed how far in advance the portal publishes a 
 4. Search for **DTEK Outages** and click **Download**.
 5. Restart Home Assistant.
 
+ha-dtek is being prepared for submission to the HACS default store. Once it is
+accepted, you can find and install it by searching for **DTEK Outages** without
+adding it as a custom repository first.
+
 ### 2. Manual Installation
 
 1. Download the latest release from the [Releases page](https://github.com/aavdberg/ha-dtek/releases).
