@@ -26,6 +26,20 @@ from .const import CABINET_DEFAULT_SITE, DEFAULT_SCAN_INTERVAL
 
 _LOGGER = logging.getLogger(__name__)
 
+_CABINET_METADATA_FIELDS = (
+    "customer_name",
+    "eic",
+    "address",
+    "object_type",
+    "contract_capacity",
+    "contract_date",
+    "city",
+    "street",
+    "house_number",
+    "meter_serial",
+    "meter_type",
+)
+
 
 def _merge_events(
     house_events: list[DtekOutageEvent],
@@ -86,20 +100,35 @@ class DtekDataUpdateCoordinator(DataUpdateCoordinator[DtekState]):
         self.cabinet_eic = cabinet_eic
         self.cabinet_customer_name = cabinet_customer_name
         self.cabinet_site = cabinet_site
+        self._last_cabinet_profile: DtekCabinetProfile | None = None
 
     async def _async_fetch_cabinet_profile(self) -> DtekCabinetProfile | None:
         """Fetch cabinet details, keeping the update alive if the cabinet is down."""
         if not (self.cabinet_token and self.cabinet_account):
             return None
         try:
-            return await self.client.async_get_cabinet_profile(
+            profile = await self.client.async_get_cabinet_profile(
                 token=self.cabinet_token,
                 account=self.cabinet_account,
                 site=self.cabinet_site,
             )
         except DtekError as err:
-            _LOGGER.debug("Could not refresh DTEK cabinet profile: %s", err)
-            return None
+            _LOGGER.warning("Could not refresh DTEK cabinet profile: %s", err)
+            profile = None
+
+        if self._last_cabinet_profile is not None:
+            retained = {
+                name: getattr(self._last_cabinet_profile, name)
+                for name in _CABINET_METADATA_FIELDS
+                if (profile is None or getattr(profile, name) is None)
+                and getattr(self._last_cabinet_profile, name) is not None
+            }
+            if retained:
+                _LOGGER.debug("Retaining last-known DTEK cabinet metadata for missing fields: %s", ", ".join(retained))
+                profile = replace(profile or DtekCabinetProfile(), **retained)
+
+        self._last_cabinet_profile = profile
+        return profile
 
     async def _async_update_data(self) -> DtekState:
         """Fetch latest data from DTEK portal."""

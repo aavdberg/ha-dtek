@@ -51,6 +51,7 @@ Be aware that it is not yet confirmed how far in advance the portal publishes a 
   - `sensor.dtek_customer_name`, `sensor.dtek_eic`, `sensor.dtek_address`, `sensor.dtek_object_type`, `sensor.dtek_contract_capacity`
   - `sensor.dtek_meter_serial`, `sensor.dtek_meter_type`
   - `sensor.dtek_balance` (derived from the account's debit and credit figures)
+  - Customer, contract, address and meter sensors retain their last-known values when the cabinet temporarily omits data. New values replace them when available. This cache is in memory only and is cleared on reload or restart; balance and outage data are not cached this way.
 - **Zero-Config Account Setup**: Signing in with your Personal Cabinet credentials resolves your account number, EIC code, registered address and queue group automatically — no manual city, street or house number entry required.
 - **Automatic Address Resolution**: Enter your settlement, street, and house number to automatically resolve your DTEK queue and local maintenance notices.
 - **Manual Queue Fallback**: Enter your queue (e.g. `GPV1.2`) directly if address lookup is temporarily unreachable.
