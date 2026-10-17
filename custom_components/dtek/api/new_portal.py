@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import json
+import logging
 import secrets
 from dataclasses import replace
 from typing import Any
@@ -13,7 +15,15 @@ from urllib.parse import unquote
 import aiohttp
 from yarl import URL
 
-from .client import DEFAULT_USER_AGENT, DtekApiClient, parse_cabinet_address
+from .client import (
+    DEFAULT_USER_AGENT,
+    DtekApiClient,
+    _format_capacity,
+    _to_float,
+    normalize_group,
+    parse_cabinet_address,
+)
+from .endpoints import PATH_CABINET_BALANCE, PATH_CABINET_OBJECTS_INFO, PATH_CABINET_POWERTRACK
 from .exceptions import DtekAuthError, DtekConnectionError, DtekError, DtekRateLimitError, DtekResponseError
 from .models import DtekCabinetProfile, DtekCabinetUser
 
@@ -22,6 +32,11 @@ AUTH = URL("https://auth.my.dtek-dnem.com.ua")
 CLIENT_ID = "ee2b502c-e74e-476c-bb1a-dc7e075e2c47"
 CALLBACK = PORTAL / "oauth/callback"
 ACCOUNTS_PATH = "/api/billing/joint/objects/get_advanced"
+LEGACY = URL("https://ok.dtek-dnem.com.ua")
+LEGACY_CALLBACK = LEGACY / "auth/callback"
+# The legacy backend performs the code exchange using its first-party verifier.
+LEGACY_CHALLENGE = "T0wiJiK1mBexC-LFD46zLufVr-iPXXPSYDMxrsYp_U8"
+_LOGGER = logging.getLogger(__name__)
 
 
 def _text(value: Any) -> str | None:
@@ -44,6 +59,9 @@ class DtekNewPortalClient(DtekApiClient):
         self._generation = 0
         self._expired = False
         self._refresh_error: DtekError | None = None
+        self._legacy_lock = asyncio.Lock()
+        self._legacy_token: str | None = None
+        self._legacy_account: str | None = None
 
     async def async_close(self) -> None:
         """Dispose of private cookies without closing HA's shared HTTP session."""
@@ -52,6 +70,8 @@ class DtekNewPortalClient(DtekApiClient):
             self._portal_session = None
         self._x_id_token = None
         self._refresh_error = None
+        self._legacy_token = None
+        self._legacy_account = None
 
     def _private_session(self) -> aiohttp.ClientSession:
         if self._portal_session is None:
@@ -70,8 +90,18 @@ class DtekNewPortalClient(DtekApiClient):
         form: dict[str, str] | None = None,
         token: bool = False,
         billing: bool = False,
+        legacy_authorization: str | None = None,
     ) -> tuple[int, Any, URL | None]:
-        if url.origin() not in (PORTAL, AUTH):
+        is_legacy = url.origin() == LEGACY
+        if is_legacy:
+            if (
+                method != "POST"
+                or url.path
+                not in ("/api/auth/sms", PATH_CABINET_OBJECTS_INFO, PATH_CABINET_BALANCE, PATH_CABINET_POWERTRACK)
+                or token
+            ):
+                raise DtekResponseError("New DTEK portal returned an unexpected legacy destination")
+        elif url.origin() not in (PORTAL, AUTH) or legacy_authorization:
             raise DtekResponseError("New DTEK portal returned an unexpected destination")
         session = self._private_session()
         headers: dict[str, str] = {}
@@ -82,6 +112,8 @@ class DtekNewPortalClient(DtekApiClient):
                 headers["X-CSRF"] = unquote(cookie.value)
         if token and self._x_id_token:
             headers["X-Id-Token"] = ("Bearer " if billing else "") + self._x_id_token
+        if legacy_authorization:
+            headers["Authorization"] = legacy_authorization
         try:
             async with session.request(
                 method, url, json=json_body, data=form, headers=headers, allow_redirects=False
@@ -225,6 +257,130 @@ class DtekNewPortalClient(DtekApiClient):
             raise DtekResponseError(f"New DTEK portal API returned an unexpected response (HTTP {status})")
         return payload
 
+    async def _legacy_login(self, account: str) -> None:
+        """Exchange a separate first-party authorization code for legacy access."""
+        if not self._x_id_token:
+            raise DtekResponseError("New DTEK portal account token is missing")
+        try:
+            parts = self._x_id_token.split(".")
+            if len(parts) != 3:
+                raise ValueError
+            claims = json.loads(base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4)))
+        except (ValueError, UnicodeError):
+            raise DtekResponseError("New DTEK portal handoff claims are invalid") from None
+        user_id = claims.get("user_data_id") if isinstance(claims, dict) else None
+        if not isinstance(user_id, (str, int)) or isinstance(user_id, bool) or not str(user_id):
+            raise DtekResponseError("New DTEK portal handoff identity is missing")
+        state = json.dumps(
+            {
+                "account": account,
+                "pathDestination": "/cabinet/person/sub-book",
+                "forcedPersonType": False,
+                "userTypeId": "2",
+                "userDataId": user_id,
+                "nonce": secrets.token_urlsafe(32),
+            },
+            separators=(",", ":"),
+        )
+        authorize = (AUTH / "api/oauth/authorize").with_query(
+            response_type="code",
+            client_id=CLIENT_ID.upper(),
+            redirect_uri=str(LEGACY_CALLBACK),
+            state=state,
+            code_challenge=LEGACY_CHALLENGE,
+            code_challenge_method="S256",
+        )
+        status, _, callback = await self._request("GET", authorize)
+        if (
+            status != 302
+            or callback is None
+            or callback.origin() != LEGACY
+            or callback.path != LEGACY_CALLBACK.path
+            or callback.query.getall("state", []) != [state]
+            or len(callback.query.getall("code", [])) != 1
+            or not callback.query.get("code")
+        ):
+            raise DtekAuthError("DTEK legacy handoff requires a valid authenticated session")
+        authorization = base64.b64encode(f"{account}:{callback.query['code']}".encode()).decode()
+        status, payload, _ = await self._request(
+            "POST",
+            LEGACY / "api/auth/sms",
+            json_body={
+                "action": "token",
+                "userType": "person",
+                "userTypeId": "2",
+                "userDataId": user_id,
+                "forcedPersonType": False,
+                "account": account,
+                "redirectUri": str(LEGACY_CALLBACK),
+                "site": "dnem",
+                "language": "uk-UA",
+                "platform": "Linux",
+            },
+            legacy_authorization="Basic " + authorization,
+        )
+        user = payload.get("user") if isinstance(payload, dict) else None
+        token = _text(user.get("token")) if isinstance(user, dict) else None
+        if status != 200 or not isinstance(payload, dict) or payload.get("status") != "success" or not token:
+            raise DtekAuthError("DTEK legacy session exchange failed")
+        self._legacy_token = token
+        self._legacy_account = account
+
+    async def _legacy_api(self, path: str, account: str, **values: str) -> dict[str, Any]:
+        status, payload, _ = await self._request(
+            "POST",
+            LEGACY.with_path(path),
+            json_body={"token": self._legacy_token, "account": account, **values},
+            legacy_authorization="Bearer " + (self._legacy_token or ""),
+        )
+        if status in (401, 403):
+            raise DtekAuthError("DTEK legacy session expired")
+        if status != 200 or not isinstance(payload, dict):
+            raise DtekResponseError("DTEK legacy data response is invalid")
+        if payload.get("status") in ("fail", "error"):
+            raise DtekResponseError("DTEK legacy data request was rejected")
+        inner = payload.get("data")
+        return inner if isinstance(inner, dict) else payload
+
+    async def _legacy_profile(self, account: str) -> DtekCabinetProfile:
+        """Read selected-account metadata with one bounded legacy renewal."""
+        async with self._legacy_lock:
+            for attempt in range(2):
+                try:
+                    if not self._legacy_token or self._legacy_account != account:
+                        await self._legacy_login(account)
+                    info = await self._legacy_api(PATH_CABINET_OBJECTS_INFO, account)
+                    customer = info.get("customer")
+                    if not isinstance(customer, dict) or _text(customer.get("account")) != account:
+                        raise DtekResponseError("DTEK legacy response does not match the selected account")
+                    eic = _text(customer.get("eic"))
+                    group = None
+                    if eic:
+                        schedule = await self._legacy_api(PATH_CABINET_POWERTRACK, account, eic=eic, site="dnem")
+                        group = normalize_group(schedule["gpv"]) if isinstance(schedule.get("gpv"), str) else None
+                    balance = await self._legacy_api(PATH_CABINET_BALANCE, account)
+                    amount = _to_float(balance.get("balance"))
+                    debit, credit = _to_float(balance.get("debet")), _to_float(balance.get("credit"))
+                    if amount is None and (debit is not None or credit is not None):
+                        amount = (credit or 0.0) - (debit or 0.0)
+                    return DtekCabinetProfile(
+                        account=account,
+                        customer_name=_text(customer.get("name")),
+                        eic=eic,
+                        address=_text(customer.get("address")),
+                        group=group,
+                        balance=amount,
+                        object_type=_text(customer.get("objectType")),
+                        contract_capacity=_format_capacity(customer.get("demPerm")),
+                        contract_date=_text(customer.get("contractDate")),
+                    )
+                except DtekAuthError:
+                    self._legacy_token = None
+                    self._legacy_account = None
+                    if attempt:
+                        raise
+        raise DtekAuthError("DTEK legacy session could not be renewed")
+
     async def async_get_accounts(self, account: str | None = None) -> list[DtekCabinetProfile]:
         """Read all pages, never silently select the first of several accounts."""
         profiles: list[DtekCabinetProfile] = []
@@ -278,9 +434,25 @@ class DtekNewPortalClient(DtekApiClient):
         )
         if not isinstance(meter, dict) or meter.get("accountNumber") != account:
             raise DtekResponseError("New DTEK portal meter response does not match the selected account")
-        return replace(
+        profile = replace(
             selected[0],
             eic=_text(meter.get("installationEic")) or selected[0].eic,
             meter_serial=_text(meter.get("serialNum")),
             meter_type=_text(meter.get("meterType")),
+        )
+        try:
+            legacy = await self._legacy_profile(account)
+        except DtekError as err:
+            _LOGGER.warning("DTEK legacy metadata unavailable; new portal metadata remains available: %s", err)
+            return profile
+        return replace(
+            profile,
+            customer_name=legacy.customer_name,
+            group=legacy.group,
+            balance=legacy.balance,
+            object_type=legacy.object_type,
+            contract_capacity=legacy.contract_capacity,
+            contract_date=profile.contract_date or legacy.contract_date,
+            eic=profile.eic or legacy.eic,
+            address=profile.address or legacy.address,
         )
