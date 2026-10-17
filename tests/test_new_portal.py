@@ -133,6 +133,24 @@ async def test_optional_legacy_data_preserves_new_meter_metadata(error: DtekErro
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("new_address", [None, "New city, New street буд. 2"])
+async def test_legacy_address_fallback_populates_location_without_overriding_new_address(
+    new_address: str | None,
+) -> None:
+    client = DtekNewPortalClient(MagicMock())
+    client.async_get_accounts = AsyncMock(return_value=[DtekCabinetProfile(account="12345", address=new_address)])
+    client._api = AsyncMock(return_value={"accountNumber": "12345"})
+    client._legacy_profile = AsyncMock(
+        return_value=DtekCabinetProfile(account="12345", address="Old city, Old street буд. 1")
+    )
+    profile = await client.async_get_cabinet_profile("unused", "12345")
+    assert profile.address == (new_address or "Old city, Old street буд. 1")
+    assert profile.city == ("New city" if new_address else "Old city")
+    assert profile.street == ("New street" if new_address else "Old street")
+    assert profile.house_number == ("2" if new_address else "1")
+
+
+@pytest.mark.asyncio
 async def test_legacy_origin_allowlist_blocks_token_leakage() -> None:
     client = DtekNewPortalClient(MagicMock())
     with pytest.raises(DtekResponseError):

@@ -445,6 +445,8 @@ class DtekNewPortalClient(DtekApiClient):
         except DtekError as err:
             _LOGGER.warning("DTEK legacy metadata unavailable; new portal metadata remains available: %s", err)
             return profile
+        address = profile.address or legacy.address
+        city, street, house_number = parse_cabinet_address(address or "")
         return replace(
             profile,
             customer_name=legacy.customer_name,
@@ -454,5 +456,8 @@ class DtekNewPortalClient(DtekApiClient):
             contract_capacity=legacy.contract_capacity,
             contract_date=profile.contract_date or legacy.contract_date,
             eic=profile.eic or legacy.eic,
-            address=profile.address or legacy.address,
+            address=address,
+            city=profile.city or city,
+            street=profile.street or street,
+            house_number=profile.house_number or house_number,
         )
