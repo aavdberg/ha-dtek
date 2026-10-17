@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 from unittest.mock import AsyncMock, MagicMock
 
 import aiohttp
@@ -12,10 +14,152 @@ from yarl import URL
 from custom_components.dtek.api.exceptions import (
     DtekAuthError,
     DtekConnectionError,
+    DtekError,
     DtekRateLimitError,
     DtekResponseError,
 )
-from custom_components.dtek.api.new_portal import ACCOUNTS_PATH, AUTH, CALLBACK, PORTAL, DtekNewPortalClient
+from custom_components.dtek.api.models import DtekCabinetProfile
+from custom_components.dtek.api.new_portal import (
+    ACCOUNTS_PATH,
+    AUTH,
+    CALLBACK,
+    LEGACY,
+    LEGACY_CALLBACK,
+    PORTAL,
+    DtekNewPortalClient,
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("valid_state", [True, False])
+async def test_legacy_handoff_uses_separate_code_and_token(valid_state: bool) -> None:
+    client = DtekNewPortalClient(MagicMock())
+    claims = base64.urlsafe_b64encode(json.dumps({"user_data_id": "synthetic_user"}).encode()).decode().rstrip("=")
+    client._x_id_token = "header." + claims + ".signature"
+
+    async def request(method: str, url: URL, **kwargs):
+        if method == "GET":
+            assert url.origin() == AUTH
+            assert url.query["redirect_uri"] == str(LEGACY_CALLBACK)
+            state = url.query["state"] if valid_state else "invalid"
+            return 302, None, LEGACY_CALLBACK.with_query(code="synthetic_code", state=state)
+        assert url == LEGACY / "api/auth/sms"
+        assert kwargs["legacy_authorization"] == "Basic " + base64.b64encode(b"12345:synthetic_code").decode()
+        assert kwargs["json_body"]["userDataId"] == "synthetic_user"
+        assert kwargs["json_body"]["account"] == "12345"
+        assert client._x_id_token not in kwargs["legacy_authorization"]
+        return 200, {"status": "success", "user": {"token": "synthetic_legacy_token"}}, None
+
+    client._request = AsyncMock(side_effect=request)
+    if not valid_state:
+        with pytest.raises(DtekAuthError):
+            await client._legacy_login("12345")
+        assert client._request.await_count == 1
+    else:
+        await client._legacy_login("12345")
+        assert client._legacy_token == "synthetic_legacy_token"
+        assert client._legacy_account == "12345"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("token", ["bad", "a.!!!!.c", "a.e30.c"])
+async def test_invalid_handoff_claims_are_rejected(token: str) -> None:
+    client = DtekNewPortalClient(MagicMock())
+    client._x_id_token = token
+    client._request = AsyncMock()
+    with pytest.raises(DtekResponseError):
+        await client._legacy_login("12345")
+    client._request.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("wrong_account", [False, True])
+async def test_legacy_metadata_requires_exact_account_and_reuses_session(wrong_account: bool) -> None:
+    client = DtekNewPortalClient(MagicMock())
+    client._legacy_token = "synthetic_legacy_token"
+    client._legacy_account = "12345"
+    client._legacy_login = AsyncMock()
+    client._legacy_api = AsyncMock(
+        side_effect=[
+            {"customer": {"account": "67890" if wrong_account else "12345", "eic": "test_eic", "name": "Test"}},
+            {"gpv": "ГПВ1.2"},
+            {"debet": 5, "credit": 10},
+        ]
+    )
+    if wrong_account:
+        with pytest.raises(DtekResponseError, match="selected account"):
+            await client._legacy_profile("12345")
+        assert client._legacy_api.await_count == 1
+    else:
+        profile = await client._legacy_profile("12345")
+        assert profile.group == "GPV1.2"
+        assert profile.balance == 5
+        assert profile.customer_name == "Test"
+    client._legacy_login.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_legacy_session_renewal_is_bounded() -> None:
+    client = DtekNewPortalClient(MagicMock())
+    client._legacy_login = AsyncMock()
+    client._legacy_api = AsyncMock(side_effect=DtekAuthError("expired"))
+    with pytest.raises(DtekAuthError):
+        await client._legacy_profile("12345")
+    assert client._legacy_login.await_count == 2
+    assert client._legacy_api.await_count == 2
+    assert client._legacy_token is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", [None, DtekConnectionError("temporary"), DtekAuthError("legacy expired")])
+async def test_optional_legacy_data_preserves_new_meter_metadata(error: DtekError | None) -> None:
+    client = DtekNewPortalClient(MagicMock())
+    client._api = AsyncMock(
+        side_effect=[
+            accounts_response(),
+            {"accountNumber": "12345", "serialNum": "new_meter", "meterType": "new_type"},
+        ]
+    )
+    client._legacy_profile = AsyncMock(
+        return_value=DtekCabinetProfile(account="12345", group="GPV1.2", customer_name="Test", balance=5),
+        side_effect=error,
+    )
+    profile = await client.async_get_cabinet_profile("unused", "12345")
+    assert profile.meter_serial == "new_meter"
+    assert profile.meter_type == "new_type"
+    assert profile.group == (None if error else "GPV1.2")
+    assert profile.customer_name == (None if error else "Test")
+    assert not client._expired
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("new_address", [None, "New city, New street буд. 2"])
+async def test_legacy_address_fallback_populates_location_without_overriding_new_address(
+    new_address: str | None,
+) -> None:
+    client = DtekNewPortalClient(MagicMock())
+    client.async_get_accounts = AsyncMock(return_value=[DtekCabinetProfile(account="12345", address=new_address)])
+    client._api = AsyncMock(return_value={"accountNumber": "12345"})
+    client._legacy_profile = AsyncMock(
+        return_value=DtekCabinetProfile(account="12345", address="Old city, Old street буд. 1")
+    )
+    profile = await client.async_get_cabinet_profile("unused", "12345")
+    assert profile.address == (new_address or "Old city, Old street буд. 1")
+    assert profile.city == ("New city" if new_address else "Old city")
+    assert profile.street == ("New street" if new_address else "Old street")
+    assert profile.house_number == ("2" if new_address else "1")
+
+
+@pytest.mark.asyncio
+async def test_legacy_origin_allowlist_blocks_token_leakage() -> None:
+    client = DtekNewPortalClient(MagicMock())
+    with pytest.raises(DtekResponseError):
+        await client._request("POST", LEGACY / "unexpected", legacy_authorization="Bearer synthetic")
+    with pytest.raises(DtekResponseError):
+        await client._request("POST", LEGACY / "api/auth/sms", token=True)
+    with pytest.raises(DtekResponseError):
+        await client._request("POST", PORTAL / "api/test", legacy_authorization="Bearer synthetic")
+    assert client._portal_session is None
 
 
 def accounts_response(page_count: int = 1, numbers: tuple[str, ...] = ("12345",)) -> dict:

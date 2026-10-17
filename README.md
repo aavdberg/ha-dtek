@@ -124,9 +124,17 @@ This uses the portal's first-party web protocol, not an officially registered
 third-party OAuth client or a supported external HA callback.
 
 Verified new-portal metadata includes registered address, EIC and meter
-serial/type. Legacy-only fields (such as balance, customer name or contracted
-capacity) may be unavailable after switching; they are not fabricated. Energy
-history and live power measurements are not included.
+serial/type. The integration also follows DTEK's first-party authorization
+handoff to obtain a separate session for the old Dnipro cabinet. It does not send
+the new account token as a legacy bearer token or require another password.
+Legacy requests verify the selected account and supplement the profile with the
+queue group, customer name, contracted capacity and balance when provided.
+The verified queue can update the manually entered group after setup.
+
+The legacy session stays in memory, is renewed once when rejected, and is
+disposed of with the new session. A legacy-source failure is logged without
+discarding working new-portal metadata. Missing fields remain unavailable rather
+than being fabricated. Energy history and live power measurements are not included.
 
 **The new login does not bypass public-portal security checks.** Outage data
 still comes from the separate public shutdowns page. If it returns a challenge,
