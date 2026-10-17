@@ -466,6 +466,7 @@ class DtekApiClient:
         except (TimeoutError, aiohttp.ClientError) as err:
             raise DtekConnectionError(f"Connection error while fetching DTEK portal: {err}") from err
 
+        self.raise_if_portal_cooling_down()
         self._check_portal_challenge(text)
 
         # Extract CSRF token
@@ -503,6 +504,7 @@ class DtekApiClient:
     ) -> dict[str, Any]:
         """Send a stateful AJAX request with CSRF token and retries."""
         csrf_token = await self.async_ensure_csrf_token()
+        self.raise_if_portal_cooling_down()
 
         url = f"{self._base_url}{AJAX_PATH}"
         headers = {

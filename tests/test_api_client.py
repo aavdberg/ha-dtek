@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -164,6 +165,42 @@ async def test_portal_cooldown_is_scoped_to_session_and_portal(mock_html_with_cs
     other_session.cookie_jar = []
     other_session.get.return_value = MockResponse(status=200, text_data=mock_html_with_csrf)
     assert await DtekApiClient(other_session).async_ensure_csrf_token() == "test_dtek_csrf_token_1234567890"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_csrf_get_cannot_post_after_another_client_starts_cooldown(
+    mock_html_with_csrf: str,
+) -> None:
+    """A GET already in flight must not lead to a new POST during cooldown."""
+    reading = asyncio.Event()
+    finish = asyncio.Event()
+
+    class DelayedResponse(MockResponse):
+        async def text(self) -> str:
+            reading.set()
+            await finish.wait()
+            return await super().text()
+
+    session = MagicMock(spec=aiohttp.ClientSession)
+    session.cookie_jar = []
+    session.get.side_effect = [
+        DelayedResponse(status=200, text_data=mock_html_with_csrf),
+        MockResponse(status=403),
+    ]
+    first_client = DtekApiClient(session)
+    pending = asyncio.create_task(first_client._async_post_ajax({"method": "getStreets"}))
+    try:
+        await asyncio.wait_for(reading.wait(), timeout=5)
+        with pytest.raises(DtekRateLimitError, match="15 minutes"):
+            await DtekApiClient(session).async_ensure_csrf_token()
+    finally:
+        finish.set()
+        with pytest.raises(DtekRateLimitError, match="another"):
+            await pending
+
+    assert first_client._csrf_token is None
+    assert session.get.call_count == 2
+    session.post.assert_not_called()
 
 
 @pytest.mark.asyncio
