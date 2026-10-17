@@ -405,6 +405,11 @@ class DtekApiClient:
             async with self._session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=20)) as resp:
                 if resp.status == 429:
                     raise DtekRateLimitError("Rate limit / WAF challenge encountered while obtaining CSRF token")
+                if resp.status == 403:
+                    raise DtekConnectionError(
+                        "DTEK portal denied the request with HTTP 403; the portal or its WAF may be blocking "
+                        "this connection"
+                    )
                 if resp.status >= 400:
                     raise DtekConnectionError(f"Failed to fetch DTEK portal: HTTP {resp.status}")
 
