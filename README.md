@@ -98,6 +98,40 @@ adding it as a custom repository first.
    - **Manual queue selection**: Directly enter your queue identifier (e.g. `GPV1.2`).
 5. Click **Submit**.
 
+### New Dnipro Personal Cabinet (`my.dtek`)
+
+The new portal is an **explicit opt-in**, currently only for Dnipro. Existing
+entries keep the legacy `ok.dtek` login unless you change their options.
+
+For an existing cabinet entry, open **Settings → Devices & services → ha-dtek →
+Configure**, choose **New Personal Cabinet (my.dtek)**, and submit. If you reset
+your password on the new website, enter it in the optional new-password field.
+The integration verifies the same linked account before saving the choice.
+Your entry and entity IDs are preserved; do not delete the integration to switch.
+After saving, the entry reloads and authenticates using the selected portal.
+
+For a new entry, select **New Personal Cabinet (my.dtek) — Dnipro**, sign in,
+select your account explicitly and enter your confirmed outage group. No queue
+is guessed from an account number. Other DSOs continue to use the legacy flow.
+
+The new client uses an isolated, in-memory cookie session, locally generated
+PKCE and validated authorization state. It renews an expired OAuth session and
+the account token once on HTTP 401. A failed renewal prompts reauthentication.
+Reloads/restarts establish a fresh session using the configured credentials;
+cookies and tokens are not copied from your browser or saved in config entries.
+Required password/phone changes must be completed on the DTEK website first.
+This uses the portal's first-party web protocol, not an officially registered
+third-party OAuth client or a supported external HA callback.
+
+Verified new-portal metadata includes registered address, EIC and meter
+serial/type. Legacy-only fields (such as balance, customer name or contracted
+capacity) may be unavailable after switching; they are not fabricated. Energy
+history and live power measurements are not included.
+
+**The new login does not bypass public-portal security checks.** Outage data
+still comes from the separate public shutdowns page. If it returns a challenge,
+account/meter data can remain available while outage entities are unavailable.
+
 ### Polling and portal blocking
 
 The integration options use **minutes**, not seconds: the default polling interval
@@ -122,8 +156,7 @@ fails. The public cooldown does not block requests to the separate cabinet.
 
 A cooldown reduces request traffic but cannot guarantee that DTEK will remove a
 network or IP block. Missing CSRF tokens alone do not prove a block. This source
-separation does not change authentication or add support for the new `my.dtek`
-portal.
+separation is independent of the selected cabinet authentication method.
 
 ---
 

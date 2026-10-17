@@ -25,6 +25,21 @@
           "group": "Groep / Queue"
         }
       },
+      "new_cabinet": {
+        "title": "Nieuw DTEK-portaal (Dnipro)",
+        "description": "Gebruik je inloggegevens voor my.dtek-dnem.com.ua. Rond verplichte wachtwoord- of telefoonwijzigingen eerst op de website af.",
+        "data": {"phone": "Telefoonnummer", "password": "Wachtwoord"}
+      },
+      "new_account": {
+        "title": "Kies je account",
+        "description": "Selecteer je account en vul je bevestigde afschakelgroep in. Een API voor de groep is in het nieuwe portaal nog niet bevestigd.",
+        "data": {"account": "Account", "group": "Groep / Queue"}
+      },
+      "reauth_confirm": {
+        "title": "DTEK-account opnieuw verbinden",
+        "description": "Vul geldige inloggegevens voor het gekozen portaal in. Het gekoppelde account verandert niet.",
+        "data": {"phone": "Telefoonnummer", "password": "Wachtwoord"}
+      },
       "cabinet": {
         "title": "DTEK Persoonlijk Kabinet Login",
         "description": "Log in met uw DTEK Persoonlijk Kabinet telefoonnummer en wachtwoord.",
@@ -35,6 +50,7 @@
       }
     },
     "error": {
+      "new_portal_unsupported": "Het nieuwe portaal wordt voorlopig alleen voor Dnipro ondersteund.",
       "cannot_connect": "Kan geen verbinding maken met het DTEK-portaal. Controleer uw internetverbinding.",
       "invalid_auth": "Ongeldig telefoonnummer of wachtwoord voor DTEK Persoonlijk Kabinet.",
       "address_not_found": "Plaats of straat niet gevonden op het DTEK-portaal.",
@@ -44,16 +60,26 @@
       "unknown": "Er is een onverwachte fout opgetreden."
     },
     "abort": {
-      "already_configured": "Deze DTEK-locatie of groep is al geconfigureerd."
+      "already_configured": "Deze DTEK-locatie of groep is al geconfigureerd.",
+      "reauth_successful": "DTEK-account opnieuw verbonden."
     }
   },
   "options": {
     "step": {
       "init": {
         "title": "DTEK Opties",
-        "description": "Pas het update-interval aan voor DTEK-schema's en storingsmeldingen.",
+        "description": "Pas het interval aan en kies eventueel het nieuwe Dnipro-portaal. Deze keuze controleert je gegevens bij my.dtek. Storingsgegevens gebruiken een aparte bron.",
         "data": {
+          "cabinet_portal": "Accountportaal",
+          "password": "Nieuw portaalwachtwoord (alleen indien gewijzigd)",
           "update_interval": "Update-interval (minuten)"
+        },
+        "error": {
+          "new_portal_unsupported": "Het nieuwe portaal wordt alleen voor Dnipro ondersteund.",
+          "no_account": "Het gekoppelde account is niet beschikbaar met deze inloggegevens.",
+          "invalid_auth": "Aanmelden mislukt. Controleer je wachtwoord en verplichte accountwijzigingen op de website.",
+          "cannot_connect": "Kan geen verbinding maken met het nieuwe DTEK-portaal.",
+          "unknown": "Het nieuwe portaal gaf geen geldige account- of metergegevens terug."
         }
       }
     }
