@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -13,6 +15,21 @@ from custom_components.dtek.api.models import DtekCabinetProfile, DtekCabinetUse
 from custom_components.dtek.api.new_portal import DtekNewPortalClient
 from custom_components.dtek.config_flow import DtekConfigFlow, DtekOptionsFlow
 from custom_components.dtek.coordinator import DtekDataUpdateCoordinator
+
+
+@pytest.mark.parametrize("language", ["strings", "en", "nl", "uk"])
+def test_options_errors_use_home_assistant_translation_structure(language: str) -> None:
+    root = Path(__file__).resolve().parents[1] / "custom_components" / "dtek"
+    path = root / "strings.json" if language == "strings" else root / "translations" / f"{language}.json"
+    options = json.loads(path.read_text(encoding="utf-8"))["options"]
+    assert "error" not in options["step"]["init"]
+    assert set(options["error"]) == {
+        "new_portal_unsupported",
+        "no_account",
+        "invalid_auth",
+        "cannot_connect",
+        "unknown",
+    }
 
 
 @pytest.fixture

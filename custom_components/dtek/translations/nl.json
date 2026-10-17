@@ -73,15 +73,15 @@
           "cabinet_portal": "Accountportaal",
           "password": "Nieuw portaalwachtwoord (alleen indien gewijzigd)",
           "update_interval": "Update-interval (minuten)"
-        },
-        "error": {
-          "new_portal_unsupported": "Het nieuwe portaal wordt alleen voor Dnipro ondersteund.",
-          "no_account": "Het gekoppelde account is niet beschikbaar met deze inloggegevens.",
-          "invalid_auth": "Aanmelden mislukt. Controleer je wachtwoord en verplichte accountwijzigingen op de website.",
-          "cannot_connect": "Kan geen verbinding maken met het nieuwe DTEK-portaal.",
-          "unknown": "Het nieuwe portaal gaf geen geldige account- of metergegevens terug."
         }
       }
+    },
+    "error": {
+      "new_portal_unsupported": "Het nieuwe portaal wordt alleen voor Dnipro ondersteund.",
+      "no_account": "Het gekoppelde account is niet beschikbaar met deze inloggegevens.",
+      "invalid_auth": "Aanmelden mislukt. Controleer je wachtwoord en verplichte accountwijzigingen op de website.",
+      "cannot_connect": "Kan geen verbinding maken met het nieuwe DTEK-portaal.",
+      "unknown": "Het nieuwe portaal gaf geen geldige account- of metergegevens terug."
     }
   },
   "entity": {

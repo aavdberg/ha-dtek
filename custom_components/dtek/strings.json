@@ -73,15 +73,15 @@
           "cabinet_portal": "Account portal",
           "password": "New portal password (only if changed)",
           "update_interval": "Update interval (minutes)"
-        },
-        "error": {
-          "new_portal_unsupported": "The new portal is supported only for Dnipro.",
-          "no_account": "The linked account is not available with these credentials.",
-          "invalid_auth": "Login failed. Verify the saved credentials and required account changes on the website.",
-          "cannot_connect": "Could not connect to the new DTEK portal.",
-          "unknown": "Could not verify the new portal account or meter response."
         }
       }
+    },
+    "error": {
+      "new_portal_unsupported": "The new portal is supported only for Dnipro.",
+      "no_account": "The linked account is not available with these credentials.",
+      "invalid_auth": "Login failed. Verify the saved credentials and required account changes on the website.",
+      "cannot_connect": "Could not connect to the new DTEK portal.",
+      "unknown": "Could not verify the new portal account or meter response."
     }
   },
   "entity": {
