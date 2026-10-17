@@ -113,9 +113,17 @@ portal during the pause. Requests can resume on the next attempt after it expire
 A full Home Assistant restart resets the pause; avoid repeated restarts/reloads
 while troubleshooting a suspected block.
 
-Unavailable outage data remains an update/setup failure, not a confirmed empty
-schedule. A cooldown reduces request traffic but cannot guarantee that DTEK will
-remove a network or IP block. Missing CSRF tokens alone do not prove a block.
+When a linked Personal Cabinet still returns a profile, setup and account/meter
+sensors remain available even if the public outage portal fails or is paused.
+Outage sensors and the calendar are marked **unavailable**, not "no outage";
+calendar queries report an error rather than a confirmed empty schedule. If
+neither source can be refreshed, or no cabinet is linked, the update/setup still
+fails. The public cooldown does not block requests to the separate cabinet.
+
+A cooldown reduces request traffic but cannot guarantee that DTEK will remove a
+network or IP block. Missing CSRF tokens alone do not prove a block. This source
+separation does not change authentication or add support for the new `my.dtek`
+portal.
 
 ---
 

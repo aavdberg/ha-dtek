@@ -63,6 +63,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: DtekConfigEntry) -> bool
     account = entry.data.get(CONF_ACCOUNT)
     eic = entry.data.get(CONF_EIC)
     password = entry.data.get(CONF_PASSWORD)
+    cabinet_enabled = bool(phone and password)
 
     base_url = SUPPORTED_DSOS.get(dso, {}).get("base_url", "https://www.dtek-dnem.com.ua")
     cabinet_site = cabinet_site_for_dso(dso)
@@ -72,14 +73,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: DtekConfigEntry) -> bool
         base_url=base_url,
         cabinet_base_url=cabinet_base_url_for_dso(dso),
     )
-    try:
-        client.raise_if_portal_cooling_down()
-    except DtekRateLimitError as err:
-        raise ConfigEntryNotReady(str(err)) from err
+    if not cabinet_enabled:
+        try:
+            client.raise_if_portal_cooling_down()
+        except DtekRateLimitError as err:
+            raise ConfigEntryNotReady(str(err)) from err
 
     cabinet_token = None
     cabinet_customer_name = None
-    cabinet_enabled = bool(phone and password)
     if cabinet_enabled:
         try:
             user = await client.async_cabinet_authenticate(

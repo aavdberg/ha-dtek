@@ -140,6 +140,7 @@ def _install_homeassistant_stubs() -> None:
             self.name = name
             self.update_interval = update_interval
             self.data = None
+            self.last_update_success = True
 
         async def async_config_entry_first_refresh(self) -> None:
             pass
@@ -163,6 +164,10 @@ def _install_homeassistant_stubs() -> None:
 
         def __init__(self, coordinator: Any) -> None:
             self.coordinator = coordinator
+
+        @property
+        def available(self) -> bool:
+            return self.coordinator.last_update_success
 
     update_coordinator.UpdateFailed = UpdateFailed
     update_coordinator.DataUpdateCoordinator = DataUpdateCoordinator

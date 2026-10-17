@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from homeassistant.components.calendar import CalendarEntity, CalendarEvent
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -65,9 +66,14 @@ class DtekOutageCalendarEntity(CoordinatorEntity[DtekDataUpdateCoordinator], Cal
         }
 
     @property
+    def available(self) -> bool:
+        """Require current outage data, even if cabinet updates succeed."""
+        return super().available and self.coordinator.data is not None and self.coordinator.data.outage_data_available
+
+    @property
     def event(self) -> CalendarEvent | None:
         """Return the next or current upcoming event."""
-        if self.coordinator.data is None:
+        if not self.available:
             return None
 
         # Return current outage if active, else next outage
@@ -98,8 +104,8 @@ class DtekOutageCalendarEntity(CoordinatorEntity[DtekDataUpdateCoordinator], Cal
         end_date: datetime,
     ) -> list[CalendarEvent]:
         """Return calendar events within a datetime range."""
-        if self.coordinator.data is None:
-            return []
+        if not self.available:
+            raise HomeAssistantError("DTEK outage data is unavailable")
 
         events: list[CalendarEvent] = []
         for item in self.coordinator.data.events:

@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from homeassistant.exceptions import HomeAssistantError
 
-from custom_components.dtek.api.models import DtekOutageEvent, DtekState
+from custom_components.dtek.api.client import DTEK_TIMEZONE
+from custom_components.dtek.api.exceptions import DtekConnectionError
+from custom_components.dtek.api.models import DtekCabinetProfile, DtekOutageEvent, DtekState
 from custom_components.dtek.binary_sensor import (
     OUTAGE_ACTIVE_DESCRIPTION,
     PLANNED_MAINTENANCE_DESCRIPTION,
@@ -16,6 +19,7 @@ from custom_components.dtek.binary_sensor import (
     DtekBinarySensor,
 )
 from custom_components.dtek.calendar import DtekOutageCalendarEntity
+from custom_components.dtek.coordinator import DtekDataUpdateCoordinator, UpdateFailed
 from custom_components.dtek.sensor import (
     CABINET_SENSOR_DESCRIPTIONS,
     SENSOR_DESCRIPTIONS,
@@ -98,6 +102,84 @@ def test_dtek_sensors() -> None:
     assert "balance" not in sensors
     assert "customer_name" not in sensors
     assert "meter_serial" not in sensors
+
+
+@pytest.mark.asyncio
+async def test_entity_availability_during_partial_update_and_recovery() -> None:
+    """Only cabinet entities remain available during a public outage-source failure."""
+    coordinator = MagicMock()
+    coordinator.last_update_success = True
+    coordinator.data = DtekState(
+        group="GPV1.2", power_expected=None, outage_data_available=False, meter_serial="test_meter"
+    )
+    outage_sensors = [DtekSensor(coordinator, desc, "test_entry", "GPV1.2") for desc in SENSOR_DESCRIPTIONS]
+    cabinet_sensor = DtekSensor(coordinator, CABINET_SENSOR_DESCRIPTIONS[6], "test_entry", "GPV1.2")
+    binaries = [
+        DtekBinarySensor(coordinator, desc, "test_entry", "GPV1.2")
+        for desc in (POWER_EXPECTED_DESCRIPTION, OUTAGE_ACTIVE_DESCRIPTION, PLANNED_MAINTENANCE_DESCRIPTION)
+    ]
+    calendar = DtekOutageCalendarEntity(coordinator, "test_entry", "GPV1.2")
+    assert all(not entity.available and entity.native_value is None for entity in outage_sensors)
+    assert all(not entity.available and entity.is_on is None for entity in binaries)
+    assert cabinet_sensor.available is True
+    assert cabinet_sensor.native_value == "test_meter"
+    assert calendar.available is False
+    assert calendar.event is None
+    now = datetime.now()
+    with pytest.raises(HomeAssistantError, match="outage data is unavailable"):
+        await calendar.async_get_events(MagicMock(), now, now + timedelta(days=1))
+
+    coordinator.data = DtekState(group="GPV1.2", meter_serial="test_meter")
+    assert all(entity.available for entity in [*outage_sensors, *binaries, calendar, cabinet_sensor])
+    assert await calendar.async_get_events(MagicMock(), now, now + timedelta(days=1)) == []
+
+    coordinator.last_update_success = False
+    assert all(not entity.available for entity in [*outage_sensors, *binaries, calendar, cabinet_sensor])
+    assert all(entity.is_on is None for entity in binaries)
+    assert all(entity.native_value is None for entity in [*outage_sensors, cabinet_sensor])
+    with pytest.raises(HomeAssistantError, match="outage data is unavailable"):
+        await calendar.async_get_events(MagicMock(), now, now + timedelta(days=1))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cabinet_enabled", [False, True])
+@pytest.mark.parametrize("had_events", [False, True])
+async def test_calendar_rejects_retained_state_after_failed_refresh(cabinet_enabled: bool, had_events: bool) -> None:
+    """A last-known successful state is not a current schedule after both sources fail."""
+    now = datetime.now(DTEK_TIMEZONE)
+    event = DtekOutageEvent(
+        start=now + timedelta(hours=1),
+        end=now + timedelta(hours=2),
+        outage_type="planned",
+        description="Test outage",
+    )
+    client = MagicMock()
+    client.async_get_schedule = AsyncMock(
+        side_effect=[[event] if had_events else [], DtekConnectionError("public portal down")]
+    )
+    client.async_get_cabinet_profile = AsyncMock(
+        side_effect=[DtekCabinetProfile(meter_serial="test_meter"), DtekConnectionError("cabinet down")]
+    )
+    coordinator = DtekDataUpdateCoordinator(
+        hass=MagicMock(),
+        client=client,
+        group="GPV1.2",
+        cabinet_token="test_token" if cabinet_enabled else None,
+        cabinet_account="test_account" if cabinet_enabled else None,
+    )
+    coordinator.data = await coordinator._async_update_data()
+    coordinator.last_update_success = True
+    calendar = DtekOutageCalendarEntity(coordinator, "test_entry", "GPV1.2")
+    assert calendar.available is True
+    with pytest.raises(UpdateFailed, match="Cannot connect"):
+        await coordinator._async_update_data()
+    # HA retains data but marks the coordinator update as failed.
+    coordinator.last_update_success = False
+    assert coordinator.data.outage_data_available is True
+    assert calendar.available is False
+    assert calendar.event is None
+    with pytest.raises(HomeAssistantError, match="outage data is unavailable"):
+        await calendar.async_get_events(MagicMock(), now, now + timedelta(days=1))
 
 
 def test_cabinet_sensors_only_created_when_data_available() -> None:
