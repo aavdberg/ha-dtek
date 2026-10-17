@@ -9,7 +9,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .api import DtekApiClient, DtekAuthError, DtekError
+from .api import DtekApiClient, DtekAuthError, DtekError, DtekRateLimitError
 from .const import (
     CONF_ACCOUNT,
     CONF_CITY,
@@ -72,6 +72,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: DtekConfigEntry) -> bool
         base_url=base_url,
         cabinet_base_url=cabinet_base_url_for_dso(dso),
     )
+    try:
+        client.raise_if_portal_cooling_down()
+    except DtekRateLimitError as err:
+        raise ConfigEntryNotReady(str(err)) from err
 
     cabinet_token = None
     cabinet_customer_name = None

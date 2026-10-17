@@ -12,7 +12,7 @@ class DtekConnectionError(DtekError):
 
 
 class DtekRateLimitError(DtekError):
-    """Exception raised when rate limit or WAF challenge is encountered (HTTP 429)."""
+    """Exception raised for portal blocking, rate limits, or an active cooldown."""
 
 
 class DtekCsrfError(DtekError):
