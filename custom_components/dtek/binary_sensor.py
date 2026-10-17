@@ -118,7 +118,7 @@ class DtekBinarySensor(CoordinatorEntity[DtekDataUpdateCoordinator], BinarySenso
     @property
     def is_on(self) -> bool | None:
         """Return True if condition is met."""
-        if self.coordinator.data is None or not self.coordinator.data.outage_data_available:
+        if not self.available:
             return None
         if self._is_on_fn:
             return bool(self._is_on_fn(self.coordinator.data))

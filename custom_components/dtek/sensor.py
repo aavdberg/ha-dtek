@@ -226,8 +226,6 @@ class DtekSensor(CoordinatorEntity[DtekDataUpdateCoordinator], SensorEntity):
     @property
     def native_value(self) -> datetime | str | float | None:
         """Return the value of the sensor."""
-        if self.coordinator.data is None:
-            return None
-        if self.entity_description in SENSOR_DESCRIPTIONS and not self.coordinator.data.outage_data_available:
+        if not self.available:
             return None
         return self.entity_description.value_fn(self.coordinator.data)

@@ -73,7 +73,7 @@ class DtekOutageCalendarEntity(CoordinatorEntity[DtekDataUpdateCoordinator], Cal
     @property
     def event(self) -> CalendarEvent | None:
         """Return the next or current upcoming event."""
-        if self.coordinator.data is None or not self.coordinator.data.outage_data_available:
+        if not self.available:
             return None
 
         # Return current outage if active, else next outage
@@ -104,10 +104,8 @@ class DtekOutageCalendarEntity(CoordinatorEntity[DtekDataUpdateCoordinator], Cal
         end_date: datetime,
     ) -> list[CalendarEvent]:
         """Return calendar events within a datetime range."""
-        if self.coordinator.data is not None and not self.coordinator.data.outage_data_available:
+        if not self.available:
             raise HomeAssistantError("DTEK outage data is unavailable")
-        if self.coordinator.data is None:
-            return []
 
         events: list[CalendarEvent] = []
         for item in self.coordinator.data.events:
