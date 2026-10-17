@@ -5,13 +5,18 @@ from __future__ import annotations
 import logging
 from datetime import timedelta
 
-from homeassistant.core import HomeAssistant
+from homeassistant.const import EVENT_HOMEASSISTANT_STOP
+from homeassistant.core import Event, HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import DtekApiClient, DtekAuthError, DtekError, DtekRateLimitError
+from .api.new_portal import DtekNewPortalClient
 from .const import (
+    CABINET_PORTAL_LEGACY,
+    CABINET_PORTAL_NEW,
     CONF_ACCOUNT,
+    CONF_CABINET_PORTAL,
     CONF_CITY,
     CONF_DSO,
     CONF_EIC,
@@ -55,6 +60,35 @@ def _async_persist_discovered_data(
 async def async_setup_entry(hass: HomeAssistant, entry: DtekConfigEntry) -> bool:
     """Set up DTEK Outages from a config entry."""
     dso = entry.data.get(CONF_DSO, DEFAULT_DSO)
+    portal = entry.options.get(CONF_CABINET_PORTAL, entry.data.get(CONF_CABINET_PORTAL, CABINET_PORTAL_LEGACY))
+    if portal not in (CABINET_PORTAL_LEGACY, CABINET_PORTAL_NEW):
+        raise ConfigEntryNotReady("Unknown DTEK cabinet portal selection")
+    if portal == CABINET_PORTAL_NEW and dso != "dtek-dnem":
+        raise ConfigEntryNotReady("New DTEK portal support is currently limited to Dnipro")
+    client_class = DtekNewPortalClient if portal == CABINET_PORTAL_NEW else DtekApiClient
+    client = client_class(
+        session=async_get_clientsession(hass),
+        base_url=SUPPORTED_DSOS.get(dso, {}).get("base_url", "https://www.dtek-dnem.com.ua"),
+        cabinet_base_url=cabinet_base_url_for_dso(dso),
+    )
+    completed = False
+    try:
+        completed = await _async_setup_with_client(hass, entry, client)
+        if completed and isinstance(client, DtekNewPortalClient):
+
+            async def _async_close_on_stop(event: Event) -> None:
+                await client.async_close()
+
+            entry.async_on_unload(hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _async_close_on_stop))
+        return completed
+    finally:
+        if not completed and isinstance(client, DtekNewPortalClient):
+            await client.async_close()
+
+
+async def _async_setup_with_client(hass: HomeAssistant, entry: DtekConfigEntry, client: DtekApiClient) -> bool:
+    """Finish setup, leaving private client cleanup to the owning entry."""
+    dso = entry.data.get(CONF_DSO, DEFAULT_DSO)
     group = entry.data.get(CONF_GROUP, "GPV1.2")
     city = entry.data.get(CONF_CITY)
     street = entry.data.get(CONF_STREET)
@@ -65,14 +99,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: DtekConfigEntry) -> bool
     password = entry.data.get(CONF_PASSWORD)
     cabinet_enabled = bool(phone and password)
 
-    base_url = SUPPORTED_DSOS.get(dso, {}).get("base_url", "https://www.dtek-dnem.com.ua")
     cabinet_site = cabinet_site_for_dso(dso)
-    session = async_get_clientsession(hass)
-    client = DtekApiClient(
-        session=session,
-        base_url=base_url,
-        cabinet_base_url=cabinet_base_url_for_dso(dso),
-    )
     if not cabinet_enabled:
         try:
             client.raise_if_portal_cooling_down()
@@ -161,7 +188,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: DtekConfigEntry) -> bool
 
 async def async_unload_entry(hass: HomeAssistant, entry: DtekConfigEntry) -> bool:
     """Unload a config entry."""
-    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if unloaded and isinstance(entry.runtime_data.client, DtekNewPortalClient):
+        await entry.runtime_data.client.async_close()
+    return unloaded
 
 
 async def async_update_options(hass: HomeAssistant, entry: DtekConfigEntry) -> None:

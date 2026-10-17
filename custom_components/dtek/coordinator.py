@@ -7,11 +7,13 @@ from dataclasses import replace
 from datetime import datetime, timedelta
 
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import (
     DTEK_TIMEZONE,
     DtekApiClient,
+    DtekAuthError,
     DtekCabinetProfile,
     DtekConnectionError,
     DtekError,
@@ -117,6 +119,8 @@ class DtekDataUpdateCoordinator(DataUpdateCoordinator[DtekState]):
             self._cabinet_refresh_succeeded = profile is not None and any(
                 getattr(profile, name) is not None for name in (*_CABINET_METADATA_FIELDS, "balance")
             )
+        except DtekAuthError as err:
+            raise ConfigEntryAuthFailed("DTEK cabinet session expired; please reauthenticate") from err
         except DtekError as err:
             _LOGGER.warning("Could not refresh DTEK cabinet profile: %s", err)
             profile = None

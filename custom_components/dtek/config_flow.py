@@ -19,8 +19,12 @@ from .api import (
     find_house_info,
     normalize_house_number,
 )
+from .api.new_portal import DtekNewPortalClient
 from .const import (
+    CABINET_PORTAL_LEGACY,
+    CABINET_PORTAL_NEW,
     CONF_ACCOUNT,
+    CONF_CABINET_PORTAL,
     CONF_CITY,
     CONF_DSO,
     CONF_EIC,
@@ -46,6 +50,7 @@ CONF_SETUP_MODE = "setup_mode"
 SETUP_MODE_ADDRESS = "address"
 SETUP_MODE_CABINET = "cabinet"
 SETUP_MODE_MANUAL = "manual"
+SETUP_MODE_NEW_CABINET = "new_cabinet"
 
 
 class _AbortCabinetStep(Exception):
@@ -64,6 +69,8 @@ class DtekConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._street: str | None = None
         self._house_number: str | None = None
         self._group: str | None = None
+        self._new_accounts: list[str] = []
+        self._new_data: dict[str, Any] = {}
 
     async def async_step_user(
         self,
@@ -78,9 +85,15 @@ class DtekConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
             if setup_mode == SETUP_MODE_CABINET:
                 return await self.async_step_cabinet()
+            if setup_mode == SETUP_MODE_NEW_CABINET:
+                if self._dso != "dtek-dnem":
+                    errors["base"] = "new_portal_unsupported"
+                else:
+                    return await self.async_step_new_cabinet()
             if setup_mode == SETUP_MODE_MANUAL:
                 return await self.async_step_manual_group()
-            return await self.async_step_address()
+            elif setup_mode != SETUP_MODE_NEW_CABINET:
+                return await self.async_step_address()
 
         dso_options = {dso_id: info["name"] for dso_id, info in SUPPORTED_DSOS.items()}
 
@@ -92,6 +105,7 @@ class DtekConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         SETUP_MODE_CABINET: "Personal Cabinet (ok.dtek) login [Recommended]",
                         SETUP_MODE_ADDRESS: "Automatic address lookup",
                         SETUP_MODE_MANUAL: "Manual group/queue entry",
+                        SETUP_MODE_NEW_CABINET: "New Personal Cabinet (my.dtek) — Dnipro",
                     }
                 ),
             }
@@ -100,6 +114,123 @@ class DtekConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="user",
             data_schema=schema,
+            errors=errors,
+        )
+
+    async def async_step_new_cabinet(self, user_input: dict[str, Any] | None = None) -> config_entries.ConfigFlowResult:
+        """Authenticate explicitly against the new Dnipro portal."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            client = DtekNewPortalClient(
+                session=async_get_clientsession(self.hass), base_url=SUPPORTED_DSOS[self._dso]["base_url"]
+            )
+            try:
+                user = await client.async_cabinet_authenticate(
+                    phone=user_input[CONF_PHONE].strip(), password=user_input[CONF_PASSWORD], site="dnem"
+                )
+                if not user.accounts:
+                    errors["base"] = "no_account"
+                else:
+                    self._new_accounts = user.accounts
+                    self._new_data = {
+                        CONF_DSO: self._dso,
+                        CONF_PHONE: user_input[CONF_PHONE].strip(),
+                        CONF_PASSWORD: user_input[CONF_PASSWORD],
+                        CONF_CABINET_PORTAL: CABINET_PORTAL_NEW,
+                    }
+                    return await self.async_step_new_account()
+            except DtekAuthError:
+                errors["base"] = "invalid_auth"
+            except DtekConnectionError:
+                errors["base"] = "cannot_connect"
+            except DtekError:
+                errors["base"] = "unknown"
+            finally:
+                await client.async_close()
+        return self.async_show_form(
+            step_id="new_cabinet",
+            data_schema=vol.Schema({vol.Required(CONF_PHONE): str, vol.Required(CONF_PASSWORD): str}),
+            errors=errors,
+        )
+
+    async def async_step_new_account(self, user_input: dict[str, Any] | None = None) -> config_entries.ConfigFlowResult:
+        """Select an account without guessing an outage queue."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            account = user_input[CONF_ACCOUNT]
+            group = user_input[CONF_GROUP].strip().upper()
+            if account not in self._new_accounts:
+                errors["base"] = "no_account"
+            elif not group:
+                errors["base"] = "no_group"
+            else:
+                await self.async_set_unique_id(f"{self._dso}_cabinet_{account}".lower())
+                self._abort_if_unique_id_configured()
+                return self.async_create_entry(
+                    title=f"DTEK Account {account}",
+                    data={**self._new_data, CONF_ACCOUNT: account, CONF_GROUP: group},
+                )
+        return self.async_show_form(
+            step_id="new_account",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_ACCOUNT): vol.In(self._new_accounts),
+                    vol.Required(CONF_GROUP): str,
+                }
+            ),
+            errors=errors,
+        )
+
+    async def async_step_reauth(self, entry_data: dict[str, Any]) -> config_entries.ConfigFlowResult:
+        """Prompt for new credentials without changing account identity."""
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        entry = self._get_reauth_entry()
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            dso = entry.data.get(CONF_DSO, DEFAULT_DSO)
+            portal = entry.options.get(CONF_CABINET_PORTAL, entry.data.get(CONF_CABINET_PORTAL, CABINET_PORTAL_LEGACY))
+            client_class = DtekNewPortalClient if portal == CABINET_PORTAL_NEW else DtekApiClient
+            client = client_class(
+                session=async_get_clientsession(self.hass),
+                base_url=SUPPORTED_DSOS[dso]["base_url"],
+                cabinet_base_url=cabinet_base_url_for_dso(dso),
+            )
+            try:
+                user = await client.async_cabinet_authenticate(
+                    phone=user_input[CONF_PHONE].strip(),
+                    password=user_input[CONF_PASSWORD],
+                    site=cabinet_site_for_dso(dso),
+                )
+                account = entry.data.get(CONF_ACCOUNT)
+                if account not in user.accounts:
+                    errors["base"] = "no_account"
+                else:
+                    await client.async_get_cabinet_profile(
+                        token=user.token, account=account, site=cabinet_site_for_dso(dso)
+                    )
+                    return self.async_update_reload_and_abort(
+                        entry,
+                        data_updates={
+                            CONF_PHONE: user_input[CONF_PHONE].strip(),
+                            CONF_PASSWORD: user_input[CONF_PASSWORD],
+                        },
+                    )
+            except DtekAuthError:
+                errors["base"] = "invalid_auth"
+            except DtekConnectionError:
+                errors["base"] = "cannot_connect"
+            except DtekError:
+                errors["base"] = "unknown"
+            finally:
+                if isinstance(client, DtekNewPortalClient):
+                    await client.async_close()
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            data_schema=vol.Schema({vol.Required(CONF_PHONE): str, vol.Required(CONF_PASSWORD): str}),
             errors=errors,
         )
 
@@ -337,8 +468,50 @@ class DtekOptionsFlow(config_entries.OptionsFlow):
         user_input: dict[str, Any] | None = None,
     ) -> config_entries.ConfigFlowResult:
         """Manage options."""
+        errors: dict[str, str] = {}
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            current_portal = self._config_entry.options.get(
+                CONF_CABINET_PORTAL, self._config_entry.data.get(CONF_CABINET_PORTAL, CABINET_PORTAL_LEGACY)
+            )
+            portal = user_input.get(CONF_CABINET_PORTAL, current_portal)
+            password = user_input.get(CONF_PASSWORD) or self._config_entry.data.get(CONF_PASSWORD)
+            if portal == CABINET_PORTAL_NEW and (portal != current_portal or user_input.get(CONF_PASSWORD)):
+                dso = self._config_entry.data.get(CONF_DSO, DEFAULT_DSO)
+                if dso != "dtek-dnem":
+                    errors["base"] = "new_portal_unsupported"
+                elif not self._config_entry.data.get(CONF_PHONE) or not password:
+                    errors["base"] = "no_account"
+                else:
+                    client = DtekNewPortalClient(
+                        session=async_get_clientsession(self.hass), base_url=SUPPORTED_DSOS[dso]["base_url"]
+                    )
+                    try:
+                        user = await client.async_cabinet_authenticate(
+                            phone=self._config_entry.data[CONF_PHONE],
+                            password=password,
+                            site="dnem",
+                        )
+                        account = self._config_entry.data.get(CONF_ACCOUNT)
+                        if account not in user.accounts:
+                            errors["base"] = "no_account"
+                        else:
+                            await client.async_get_cabinet_profile(token=user.token, account=account)
+                    except DtekAuthError:
+                        errors["base"] = "invalid_auth"
+                    except DtekConnectionError:
+                        errors["base"] = "cannot_connect"
+                    except DtekError:
+                        errors["base"] = "unknown"
+                    finally:
+                        await client.async_close()
+            if not errors:
+                if portal == CABINET_PORTAL_NEW and user_input.get(CONF_PASSWORD):
+                    self.hass.config_entries.async_update_entry(
+                        self._config_entry, data={**self._config_entry.data, CONF_PASSWORD: password}
+                    )
+                return self.async_create_entry(
+                    title="", data={key: value for key, value in user_input.items() if key != CONF_PASSWORD}
+                )
 
         current_interval = self._config_entry.options.get(
             CONF_UPDATE_INTERVAL,
@@ -356,5 +529,23 @@ class DtekOptionsFlow(config_entries.OptionsFlow):
                 ),
             }
         )
+        if (
+            self._config_entry.data.get(CONF_PHONE)
+            and self._config_entry.data.get(CONF_DSO, DEFAULT_DSO) == "dtek-dnem"
+        ):
+            current_portal = self._config_entry.options.get(
+                CONF_CABINET_PORTAL, self._config_entry.data.get(CONF_CABINET_PORTAL, CABINET_PORTAL_LEGACY)
+            )
+            schema = schema.extend(
+                {
+                    vol.Required(CONF_CABINET_PORTAL, default=current_portal): vol.In(
+                        {
+                            CABINET_PORTAL_LEGACY: "Legacy Personal Cabinet (ok.dtek)",
+                            CABINET_PORTAL_NEW: "New Personal Cabinet (my.dtek)",
+                        }
+                    ),
+                    vol.Optional(CONF_PASSWORD): str,
+                }
+            )
 
-        return self.async_show_form(step_id="init", data_schema=schema)
+        return self.async_show_form(step_id="init", data_schema=schema, errors=errors)

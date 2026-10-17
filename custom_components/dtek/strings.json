@@ -25,6 +25,21 @@
           "group": "Queue / Group"
         }
       },
+      "new_cabinet": {
+        "title": "New DTEK portal login (Dnipro)",
+        "description": "Use your my.dtek-dnem.com.ua credentials. Complete required password or phone changes on the website first.",
+        "data": {"phone": "Phone number", "password": "Password"}
+      },
+      "new_account": {
+        "title": "Choose your account",
+        "description": "Select your account and enter your confirmed outage queue. The new portal does not provide a verified outage queue API.",
+        "data": {"account": "Account", "group": "Queue / Group"}
+      },
+      "reauth_confirm": {
+        "title": "Reconnect your DTEK account",
+        "description": "Enter valid credentials for the selected portal. The existing linked account will not be changed.",
+        "data": {"phone": "Phone number", "password": "Password"}
+      },
       "cabinet": {
         "title": "DTEK Personal Cabinet Login",
         "description": "Log in with your DTEK Personal Cabinet phone number and password.",
@@ -35,6 +50,7 @@
       }
     },
     "error": {
+      "new_portal_unsupported": "The new portal is currently supported only for Dnipro.",
       "cannot_connect": "Failed to connect to DTEK portal. Please check your internet connection.",
       "invalid_auth": "Invalid phone number or password for DTEK Personal Cabinet.",
       "address_not_found": "City or street was not found on DTEK portal.",
@@ -44,18 +60,28 @@
       "unknown": "An unexpected error occurred."
     },
     "abort": {
-      "already_configured": "This DTEK location or queue is already configured."
+      "already_configured": "This DTEK location or queue is already configured.",
+      "reauth_successful": "DTEK account reconnected."
     }
   },
   "options": {
     "step": {
       "init": {
         "title": "DTEK Options",
-        "description": "Adjust polling interval for DTEK schedule and outage updates.",
+        "description": "Adjust polling and optionally choose the new Dnipro portal. Selecting it validates the saved credentials against my.dtek. Public outage access is separate.",
         "data": {
+          "cabinet_portal": "Account portal",
+          "password": "New portal password (only if changed)",
           "update_interval": "Update interval (minutes)"
         }
       }
+    },
+    "error": {
+      "new_portal_unsupported": "The new portal is supported only for Dnipro.",
+      "no_account": "The linked account is not available with these credentials.",
+      "invalid_auth": "Login failed. Verify the saved credentials and required account changes on the website.",
+      "cannot_connect": "Could not connect to the new DTEK portal.",
+      "unknown": "Could not verify the new portal account or meter response."
     }
   },
   "entity": {
