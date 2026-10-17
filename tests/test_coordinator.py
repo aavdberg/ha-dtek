@@ -223,6 +223,102 @@ async def test_coordinator_survives_cabinet_outage() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["partial", "empty", "connection"])
+async def test_coordinator_retains_cabinet_metadata(failure: str, caplog: pytest.LogCaptureFixture) -> None:
+    """Missing metadata keeps last-known values without retaining balance or outages."""
+    client = MagicMock()
+    client.async_get_home_numbers = AsyncMock(return_value=MagicMock(houses={}))
+    now = datetime.now(DTEK_TIMEZONE)
+    client.async_get_schedule = AsyncMock(
+        side_effect=[
+            [
+                DtekOutageEvent(
+                    start=now - timedelta(hours=1),
+                    end=now + timedelta(hours=1),
+                    outage_type="planned",
+                    description="Test maintenance",
+                )
+            ],
+            [],
+            [],
+            [],
+        ]
+    )
+    original = DtekCabinetProfile(
+        account="12345678",
+        customer_name="Test Customer",
+        eic="test-eic",
+        address="Test address",
+        object_type="Test building",
+        contract_capacity="40.2 kW",
+        city="Test city",
+        street="Test street",
+        house_number="1",
+        meter_serial="test-meter",
+        meter_type="Test type",
+        balance=12.5,
+    )
+    missing = {
+        "partial": DtekCabinetProfile(customer_name="Updated Customer"),
+        "empty": DtekCabinetProfile(),
+        "connection": DtekConnectionError("cabinet down"),
+    }[failure]
+    updated = DtekCabinetProfile(contract_capacity="50 kW", meter_serial="new-meter", balance=0.0)
+    client.async_get_cabinet_profile = AsyncMock(side_effect=[original, missing, missing, updated])
+    coordinator = DtekDataUpdateCoordinator(
+        hass=MagicMock(),
+        client=client,
+        group="GPV1.2",
+        cabinet_token="mock-token",
+        cabinet_account="12345678",
+    )
+
+    with caplog.at_level("DEBUG", logger="custom_components.dtek.coordinator"):
+        first = await coordinator._async_update_data()
+        second = await coordinator._async_update_data()
+        repeated = await coordinator._async_update_data()
+        third = await coordinator._async_update_data()
+
+    assert first.power_expected is False
+    assert second.power_expected is True
+    assert second.current_outage is None
+    assert second.events == []
+    assert second.balance is None
+    for field in ("eic", "address", "object_type", "contract_capacity", "meter_serial", "meter_type"):
+        assert getattr(second, field) == getattr(original, field)
+    assert second.customer_name == ("Updated Customer" if failure == "partial" else original.customer_name)
+    assert repeated.contract_capacity == original.contract_capacity
+    assert repeated.balance is None
+    assert third.contract_capacity == "50 kW"
+    assert third.meter_serial == "new-meter"
+    assert third.meter_type == original.meter_type
+    assert third.balance == 0.0
+    assert "Retaining last-known DTEK cabinet metadata" in caplog.text
+    assert "Test address" not in caplog.text
+    assert "mock-token" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_coordinator_cabinet_cache_is_instance_local() -> None:
+    """Reloading or using another account cannot reuse an old profile."""
+    client = MagicMock()
+    client.async_get_schedule = AsyncMock(return_value=[])
+    client.async_get_cabinet_profile = AsyncMock(
+        side_effect=[DtekCabinetProfile(contract_capacity="40.2 kW"), DtekCabinetProfile()]
+    )
+    for account, expected in (("12345678", "40.2 kW"), ("87654321", None)):
+        coordinator = DtekDataUpdateCoordinator(
+            hass=MagicMock(),
+            client=client,
+            group="GPV1.2",
+            cabinet_token="mock-token",
+            cabinet_account=account,
+        )
+        state = await coordinator._async_update_data()
+        assert state.contract_capacity == expected
+
+
+@pytest.mark.asyncio
 async def test_coordinator_raises_update_failed_on_generic_api_error() -> None:
     """Any other DtekError surfaces as UpdateFailed via the generic handler."""
     hass = MagicMock()
