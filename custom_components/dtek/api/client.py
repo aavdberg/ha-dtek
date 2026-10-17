@@ -7,8 +7,12 @@ import base64
 import logging
 import random
 import re
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Final
+from math import ceil
+from time import monotonic
+from typing import Any, Final, NoReturn
+from weakref import WeakKeyDictionary
 from zoneinfo import ZoneInfo
 
 import aiohttp
@@ -53,6 +57,17 @@ DEFAULT_USER_AGENT = (
 )
 MAX_RETRIES = 3
 INITIAL_BACKOFF = 1.0
+PORTAL_BLOCK_COOLDOWN_SECONDS: Final = 15 * 60
+
+
+@dataclass(frozen=True, slots=True)
+class _PortalCooldown:
+    retry_at: float
+    reason: str
+
+
+# HA reuses its HTTP session across config-entry setup attempts and reloads.
+_PORTAL_COOLDOWNS: WeakKeyDictionary[aiohttp.ClientSession, dict[str, _PortalCooldown]] = WeakKeyDictionary()
 
 # Regex patterns for CSRF token
 CSRF_META_PATTERN = re.compile(
@@ -61,6 +76,10 @@ CSRF_META_PATTERN = re.compile(
     re.IGNORECASE,
 )
 CSRF_JS_PATTERN = re.compile(r'["\']csrf-token["\']\s*:\s*["\']([^"\']+)["\']', re.IGNORECASE)
+INCAPSULA_RESOURCE_PATTERN = re.compile(
+    r'<(?:script|iframe)\b[^>]*\bsrc\s*=\s*["\'][^"\']*/_Incapsula_Resource(?:[?"\'])',
+    re.IGNORECASE,
+)
 
 SETTLEMENT_PREFIX_PATTERN = re.compile(
     r"^(с-ще|смт|м\.|с\.|тг|селище|село|місто)\s*",
@@ -370,11 +389,40 @@ class DtekApiClient:
         self._csrf_token: str | None = None
         self._streets_cache: dict[str, list[str]] | None = None
         self._cabinet_token: str | None = None
+        self._portal_cooldowns = _PORTAL_COOLDOWNS.setdefault(session, {})
 
     @property
     def base_url(self) -> str:
         """Return current base URL."""
         return self._base_url
+
+    def raise_if_portal_cooling_down(self) -> None:
+        """Reject requests locally while this session's portal is cooling down."""
+        cooldown = self._portal_cooldowns.get(self._base_url)
+        if cooldown is None:
+            return
+        remaining = ceil(cooldown.retry_at - monotonic())
+        if remaining > 0:
+            self._csrf_token = None
+            raise DtekRateLimitError(f"{cooldown.reason}; portal requests paused for another {remaining} seconds")
+        del self._portal_cooldowns[self._base_url]
+
+    def _raise_portal_blocked(self, reason: str) -> NoReturn:
+        self._csrf_token = None
+        self._portal_cooldowns[self._base_url] = _PortalCooldown(
+            retry_at=monotonic() + PORTAL_BLOCK_COOLDOWN_SECONDS,
+            reason=reason,
+        )
+        _LOGGER.warning("%s; pausing portal requests for 15 minutes", reason)
+        raise DtekRateLimitError(f"{reason}; portal requests paused for 15 minutes")
+
+    def _check_portal_challenge(self, text: str) -> None:
+        if (
+            INCAPSULA_RESOURCE_PATTERN.search(text)
+            and not CSRF_META_PATTERN.search(text)
+            and not CSRF_JS_PATTERN.search(text)
+        ):
+            self._raise_portal_blocked("DTEK portal returned an Incapsula security page instead of portal data")
 
     def _cabinet_headers(self, token: str | None = None) -> dict[str, str]:
         """Return headers for cabinet REST calls."""
@@ -391,6 +439,7 @@ class DtekApiClient:
 
     async def async_ensure_csrf_token(self, force_refresh: bool = False) -> str:
         """Fetch the shutdowns page to obtain session cookies and CSRF token."""
+        self.raise_if_portal_cooling_down()
         if self._csrf_token and not force_refresh:
             return self._csrf_token
 
@@ -404,9 +453,9 @@ class DtekApiClient:
         try:
             async with self._session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=20)) as resp:
                 if resp.status == 429:
-                    raise DtekRateLimitError("Rate limit / WAF challenge encountered while obtaining CSRF token")
+                    self._raise_portal_blocked("DTEK portal rate limit / WAF response (HTTP 429)")
                 if resp.status == 403:
-                    raise DtekConnectionError(
+                    self._raise_portal_blocked(
                         "DTEK portal denied the request with HTTP 403; the portal or its WAF may be blocking "
                         "this connection"
                     )
@@ -416,6 +465,8 @@ class DtekApiClient:
                 text = await resp.text()
         except (TimeoutError, aiohttp.ClientError) as err:
             raise DtekConnectionError(f"Connection error while fetching DTEK portal: {err}") from err
+
+        self._check_portal_challenge(text)
 
         # Extract CSRF token
         match = CSRF_META_PATTERN.search(text)
@@ -471,14 +522,15 @@ class DtekApiClient:
                 timeout=aiohttp.ClientTimeout(total=25),
             ) as resp:
                 if resp.status == 429:
-                    if retry_count < MAX_RETRIES:
-                        backoff = (INITIAL_BACKOFF * (2**retry_count)) + random.uniform(0.1, 0.5)
-                        _LOGGER.warning("DTEK rate limit hit, backing off for %.1f seconds", backoff)
-                        await asyncio.sleep(backoff)
-                        return await self._async_post_ajax(data, retry_count + 1)
-                    raise DtekRateLimitError("DTEK rate limit exceeded after maximum retries")
+                    self._raise_portal_blocked("DTEK portal rate limit / WAF response (HTTP 429)")
 
-                if resp.status in (401, 403, 419):
+                if resp.status == 403:
+                    self._raise_portal_blocked(
+                        "DTEK portal denied the request with HTTP 403; the portal or its WAF may be blocking "
+                        "this connection"
+                    )
+
+                if resp.status in (401, 419):
                     # CSRF token might have expired, try refreshing once
                     if retry_count == 0:
                         _LOGGER.debug("CSRF token expired or rejected (HTTP %d), refreshing token", resp.status)
@@ -496,6 +548,8 @@ class DtekApiClient:
 
                 if resp.status >= 400:
                     raise DtekResponseError(f"DTEK request failed with HTTP {resp.status}")
+
+                self._check_portal_challenge(await resp.text())
 
                 try:
                     json_data = await resp.json(content_type=None)
@@ -524,6 +578,8 @@ class DtekApiClient:
             if isinstance(data, dict) and "streets" in data and isinstance(data["streets"], dict):
                 self._streets_cache = data["streets"]
                 return self._streets_cache
+        except (DtekConnectionError, DtekCsrfError, DtekRateLimitError):
+            raise
         except Exception as err:
             _LOGGER.debug("Could not fetch streets list via AJAX: %s", err)
 
@@ -547,6 +603,8 @@ class DtekApiClient:
                     resolved = resolve_settlement_and_street(city, street, streets_map)
                     if resolved:
                         resolved_city, resolved_street = resolved
+            except (DtekConnectionError, DtekCsrfError, DtekRateLimitError):
+                raise
             except Exception as err:
                 _LOGGER.debug("Address resolution failed or skipped: %s", err)
 
@@ -637,6 +695,8 @@ class DtekApiClient:
 
             try:
                 data = await self._async_post_ajax(payload)
+            except (DtekConnectionError, DtekCsrfError, DtekRateLimitError):
+                raise
             except Exception as err:
                 _LOGGER.debug("Method %s not supported or returned error: %s", method, err)
                 continue

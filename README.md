@@ -98,6 +98,25 @@ adding it as a custom repository first.
    - **Manual queue selection**: Directly enter your queue identifier (e.g. `GPV1.2`).
 5. Click **Submit**.
 
+### Polling and portal blocking
+
+The integration options use **minutes**, not seconds: the default polling interval
+is 15 minutes, adjustable from 5 to 60 minutes. This is separate from Home
+Assistant's automatic setup retries.
+
+If the public portal returns HTTP 403, HTTP 429, or a recognized Incapsula security
+page (sometimes with HTTP 200), ha-dtek pauses portal requests for **15 minutes**.
+The pause is shared by entries using the same portal and Home Assistant HTTP
+session, including automatic setup retries and manual integration reloads.
+Home Assistant may still show "Retrying", but those attempts do not contact the
+portal during the pause. Requests can resume on the next attempt after it expires.
+A full Home Assistant restart resets the pause; avoid repeated restarts/reloads
+while troubleshooting a suspected block.
+
+Unavailable outage data remains an update/setup failure, not a confirmed empty
+schedule. A cooldown reduces request traffic but cannot guarantee that DTEK will
+remove a network or IP block. Missing CSRF tokens alone do not prove a block.
+
 ---
 
 ## Automation Examples

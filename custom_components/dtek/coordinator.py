@@ -133,6 +133,7 @@ class DtekDataUpdateCoordinator(DataUpdateCoordinator[DtekState]):
     async def _async_update_data(self) -> DtekState:
         """Fetch latest data from DTEK portal."""
         try:
+            self.client.raise_if_portal_cooling_down()
             profile = await self._async_fetch_cabinet_profile()
 
             if profile:

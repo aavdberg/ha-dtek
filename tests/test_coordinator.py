@@ -19,6 +19,30 @@ from custom_components.dtek.coordinator import DtekDataUpdateCoordinator, Update
 
 
 @pytest.mark.asyncio
+async def test_coordinator_cooldown_keeps_update_failed_without_fetching() -> None:
+    """An active cooldown must not turn into an empty successful schedule."""
+    client = MagicMock()
+    client.raise_if_portal_cooling_down.side_effect = DtekRateLimitError("portal requests paused")
+    client.async_get_cabinet_profile = AsyncMock()
+    client.async_get_home_numbers = AsyncMock()
+    client.async_get_schedule = AsyncMock()
+    coordinator = DtekDataUpdateCoordinator(
+        hass=MagicMock(),
+        client=client,
+        group="GPV1.2",
+        cabinet_token="test_token",
+        cabinet_account="test_account",
+    )
+
+    with pytest.raises(UpdateFailed, match="portal requests paused"):
+        await coordinator._async_update_data()
+    assert coordinator.data is None
+    client.async_get_cabinet_profile.assert_not_called()
+    client.async_get_home_numbers.assert_not_called()
+    client.async_get_schedule.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_coordinator_update_data_with_address() -> None:
     """Test coordinator updating data with address information."""
     hass = MagicMock()
