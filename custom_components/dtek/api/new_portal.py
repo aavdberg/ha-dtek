@@ -14,7 +14,7 @@ import aiohttp
 from yarl import URL
 
 from .client import DEFAULT_USER_AGENT, DtekApiClient, parse_cabinet_address
-from .exceptions import DtekAuthError, DtekConnectionError, DtekRateLimitError, DtekResponseError
+from .exceptions import DtekAuthError, DtekConnectionError, DtekError, DtekRateLimitError, DtekResponseError
 from .models import DtekCabinetProfile, DtekCabinetUser
 
 PORTAL = URL("https://my.dtek-dnem.com.ua")
@@ -43,6 +43,7 @@ class DtekNewPortalClient(DtekApiClient):
         self._x_id_token: str | None = None
         self._generation = 0
         self._expired = False
+        self._refresh_error: DtekError | None = None
 
     async def async_close(self) -> None:
         """Dispose of private cookies without closing HA's shared HTTP session."""
@@ -50,6 +51,7 @@ class DtekNewPortalClient(DtekApiClient):
             await self._portal_session.close()
             self._portal_session = None
         self._x_id_token = None
+        self._refresh_error = None
 
     def _private_session(self) -> aiohttp.ClientSession:
         if self._portal_session is None:
@@ -124,6 +126,7 @@ class DtekNewPortalClient(DtekApiClient):
         if status != 200 or not token:
             raise DtekAuthError("New DTEK portal account access failed; complete account setup on the website")
         self._x_id_token = token
+        self._refresh_error = None
         self._generation += 1
 
     async def async_cabinet_authenticate(self, phone: str, password: str, site: str = "dnem") -> DtekCabinetUser:
@@ -198,19 +201,22 @@ class DtekNewPortalClient(DtekApiClient):
                 if self._expired:
                     raise DtekAuthError("New DTEK portal session expired; please reauthenticate")
                 if generation == self._generation:
-                    refresh_status, _, _ = await self._request(
-                        "POST",
-                        PORTAL / "api/oauth/token",
-                        form={"grant_type": "refresh_token", "client_id": CLIENT_ID},
-                    )
-                    if refresh_status != 200:
-                        self._expired = True
-                        raise DtekAuthError("New DTEK portal session expired; please reauthenticate")
                     try:
+                        refresh_status, _, _ = await self._request(
+                            "POST",
+                            PORTAL / "api/oauth/token",
+                            form={"grant_type": "refresh_token", "client_id": CLIENT_ID},
+                        )
+                        if refresh_status != 200:
+                            raise DtekAuthError("New DTEK portal session expired; please reauthenticate")
                         await self._account_login()
-                    except DtekAuthError:
-                        self._expired = True
+                    except DtekError as err:
+                        self._refresh_error = err
+                        self._generation += 1
+                        self._expired = isinstance(err, DtekAuthError)
                         raise
+                elif self._refresh_error is not None:
+                    raise self._refresh_error
             status, payload, _ = await self._request("GET", url, token=True, billing=billing)
         if status == 401:
             self._expired = True

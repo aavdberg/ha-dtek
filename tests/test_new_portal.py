@@ -219,6 +219,49 @@ async def test_concurrent_unauthorized_requests_refresh_once() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("error_type", [DtekRateLimitError, DtekConnectionError])
+async def test_concurrent_unauthorized_requests_share_transient_refresh_failure(
+    error_type: type[DtekRateLimitError | DtekConnectionError],
+) -> None:
+    client = DtekNewPortalClient(MagicMock())
+    initial_requests = 0
+    both_started = asyncio.Event()
+    failing = True
+
+    async def request(method: str, url: URL, **kwargs):
+        nonlocal initial_requests
+        if url.path == "/api/oauth/token":
+            if failing:
+                raise error_type("temporary failure")
+            return 200, None, None
+        if client._x_id_token:
+            return 200, {"ok": True}, None
+        initial_requests += 1
+        if initial_requests >= 2:
+            both_started.set()
+        await both_started.wait()
+        return 401, None, None
+
+    async def login():
+        client._x_id_token = "test_token"
+        client._refresh_error = None
+        client._generation += 1
+
+    client._request = AsyncMock(side_effect=request)
+    client._account_login = AsyncMock(side_effect=login)
+    results = await asyncio.gather(client._api("/api/test"), client._api("/api/test"), return_exceptions=True)
+    assert all(isinstance(result, error_type) for result in results)
+    assert sum(call.args[1].path == "/api/oauth/token" for call in client._request.call_args_list) == 1
+    assert not client._expired
+    client._account_login.assert_not_awaited()
+
+    failing = False
+    assert await client._api("/api/test") == {"ok": True}
+    assert client._refresh_error is None
+    assert sum(call.args[1].path == "/api/oauth/token" for call in client._request.call_args_list) == 2
+
+
+@pytest.mark.asyncio
 async def test_failed_refresh_requires_reauthentication_without_repeated_refreshes() -> None:
     client = DtekNewPortalClient(MagicMock())
     client._request = AsyncMock(side_effect=[(401, None, None), (403, None, None)])
