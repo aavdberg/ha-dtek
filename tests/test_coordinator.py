@@ -19,11 +19,11 @@ from custom_components.dtek.coordinator import DtekDataUpdateCoordinator, Update
 
 
 @pytest.mark.asyncio
-async def test_coordinator_cooldown_keeps_update_failed_without_fetching() -> None:
-    """An active cooldown must not turn into an empty successful schedule."""
+async def test_coordinator_cooldown_without_cabinet_data_keeps_update_failed() -> None:
+    """A cooldown and a failed cabinet must not become a successful empty schedule."""
     client = MagicMock()
     client.raise_if_portal_cooling_down.side_effect = DtekRateLimitError("portal requests paused")
-    client.async_get_cabinet_profile = AsyncMock()
+    client.async_get_cabinet_profile = AsyncMock(side_effect=DtekConnectionError("cabinet down"))
     client.async_get_home_numbers = AsyncMock()
     client.async_get_schedule = AsyncMock()
     coordinator = DtekDataUpdateCoordinator(
@@ -37,9 +37,122 @@ async def test_coordinator_cooldown_keeps_update_failed_without_fetching() -> No
     with pytest.raises(UpdateFailed, match="portal requests paused"):
         await coordinator._async_update_data()
     assert coordinator.data is None
-    client.async_get_cabinet_profile.assert_not_called()
+    client.async_get_cabinet_profile.assert_awaited_once()
     client.async_get_home_numbers.assert_not_called()
     client.async_get_schedule.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_stage", ["cooldown", "address", "schedule"])
+@pytest.mark.parametrize("error_type", [DtekRateLimitError, DtekConnectionError, DtekError])
+async def test_cabinet_data_survives_public_portal_failure(
+    failure_stage: str, error_type: type[DtekError], caplog: pytest.LogCaptureFixture
+) -> None:
+    """A working cabinet keeps data available without claiming a known grid status."""
+    client = MagicMock()
+    client.async_get_cabinet_profile = AsyncMock(
+        return_value=DtekCabinetProfile(meter_serial="test_meter", balance=0.0)
+    )
+    client.async_get_home_numbers = AsyncMock(return_value=DtekAddressLookupResult(result=True))
+    client.async_get_schedule = AsyncMock(return_value=[])
+    error = error_type("public portal unavailable")
+    if failure_stage == "cooldown":
+        client.raise_if_portal_cooling_down.side_effect = error
+    elif failure_stage == "address":
+        client.async_get_home_numbers.side_effect = error
+    else:
+        client.async_get_schedule.side_effect = error
+    coordinator = DtekDataUpdateCoordinator(
+        hass=MagicMock(),
+        client=client,
+        group="GPV1.2",
+        city="Test city",
+        street="Test street",
+        cabinet_token="test_token",
+        cabinet_account="test_account",
+    )
+
+    state = await coordinator._async_update_data()
+
+    assert state.meter_serial == "test_meter"
+    assert state.balance == 0.0
+    assert state.outage_data_available is False
+    assert state.power_expected is None
+    assert state.events == []
+    assert state.current_outage is None
+    assert state.next_outage is None
+    assert state.flags == {}
+    assert "cabinet data remains available" in caplog.text
+    if failure_stage == "cooldown":
+        client.async_get_home_numbers.assert_not_awaited()
+        client.async_get_schedule.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cabinet_result", [None, DtekCabinetProfile(account="test_account")])
+async def test_empty_cabinet_does_not_mask_failed_outages(cabinet_result: DtekCabinetProfile | None) -> None:
+    """A successful but empty profile does not count as independent fresh data."""
+    client = MagicMock()
+    client.async_get_cabinet_profile = AsyncMock(return_value=cabinet_result)
+    client.raise_if_portal_cooling_down.side_effect = DtekRateLimitError("requests paused")
+    coordinator = DtekDataUpdateCoordinator(
+        hass=MagicMock(),
+        client=client,
+        group="GPV1.2",
+        cabinet_token="test_token",
+        cabinet_account="test_account",
+    )
+    with pytest.raises(UpdateFailed, match="requests paused"):
+        await coordinator._async_update_data()
+
+
+@pytest.mark.asyncio
+async def test_both_sources_fail_after_successful_cabinet_update() -> None:
+    """Retained metadata must not hide a later failure of both data sources."""
+    client = MagicMock()
+    client.async_get_cabinet_profile = AsyncMock(
+        side_effect=[DtekCabinetProfile(meter_serial="test_meter"), DtekConnectionError("cabinet down")]
+    )
+    client.raise_if_portal_cooling_down.side_effect = DtekRateLimitError("requests paused")
+    coordinator = DtekDataUpdateCoordinator(
+        hass=MagicMock(),
+        client=client,
+        group="GPV1.2",
+        cabinet_token="test_token",
+        cabinet_account="test_account",
+    )
+    state = await coordinator._async_update_data()
+    assert state.meter_serial == "test_meter"
+    with pytest.raises(UpdateFailed, match="requests paused"):
+        await coordinator._async_update_data()
+
+
+@pytest.mark.asyncio
+async def test_public_portal_recovers_after_partial_update() -> None:
+    """A later successful outage request restores a known outage state."""
+    client = MagicMock()
+    client.async_get_cabinet_profile = AsyncMock(return_value=DtekCabinetProfile(meter_serial="test_meter"))
+    client.raise_if_portal_cooling_down.side_effect = [DtekRateLimitError("requests paused"), None]
+    now = datetime.now(DTEK_TIMEZONE)
+    event = DtekOutageEvent(
+        start=now - timedelta(minutes=10),
+        end=now + timedelta(hours=1),
+        outage_type="emergency",
+        description="Test outage",
+    )
+    client.async_get_schedule = AsyncMock(return_value=[event])
+    coordinator = DtekDataUpdateCoordinator(
+        hass=MagicMock(),
+        client=client,
+        group="GPV1.2",
+        cabinet_token="test_token",
+        cabinet_account="test_account",
+    )
+    assert (await coordinator._async_update_data()).outage_data_available is False
+    recovered = await coordinator._async_update_data()
+    assert recovered.outage_data_available is True
+    assert recovered.power_expected is False
+    assert recovered.current_outage == event
 
 
 @pytest.mark.asyncio
