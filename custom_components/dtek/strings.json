@@ -37,7 +37,7 @@
       },
       "reauth_confirm": {
         "title": "Reconnect your DTEK account",
-        "description": "Enter valid credentials for the selected portal. The existing linked account will not be changed.",
+        "description": "Enter your Personal Cabinet phone number and password for the selected portal. Only these credentials will be updated; your linked account and configuration will be preserved.",
         "data": {"phone": "Phone number", "password": "Password"}
       },
       "cabinet": {
