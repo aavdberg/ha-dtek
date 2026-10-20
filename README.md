@@ -98,6 +98,16 @@ adding it as a custom repository first.
    - **Manual queue selection**: Directly enter your queue identifier (e.g. `GPV1.2`).
 5. Click **Submit**.
 
+### Personal Cabinet reauthentication
+
+If saved cabinet credentials are rejected, follow Home Assistant's
+reauthentication prompt and enter your replacement phone number and password.
+The integration validates them against the entry's regional DSO and selected
+portal, and verifies access to the existing linked account before saving.
+Only the phone number and password are updated; your account, outage group,
+options, and entry/entity IDs are preserved. Invalid credentials or connection
+errors leave the existing configuration unchanged so you can retry.
+
 ### New Dnipro Personal Cabinet (`my.dtek`)
 
 The new portal is an **explicit opt-in**, currently only for Dnipro. Existing

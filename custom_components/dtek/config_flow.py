@@ -188,6 +188,7 @@ class DtekConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_reauth_confirm(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
+        """Validate replacement credentials for the linked account before reloading."""
         entry = self._get_reauth_entry()
         errors: dict[str, str] = {}
         if user_input is not None:

@@ -37,7 +37,7 @@
       },
       "reauth_confirm": {
         "title": "DTEK-account opnieuw verbinden",
-        "description": "Vul geldige inloggegevens voor het gekozen portaal in. Het gekoppelde account verandert niet.",
+        "description": "Vul uw telefoonnummer en wachtwoord voor het Persoonlijk Kabinet van het gekozen portaal in. Alleen deze inloggegevens worden bijgewerkt; uw gekoppelde account en configuratie blijven behouden.",
         "data": {"phone": "Telefoonnummer", "password": "Wachtwoord"}
       },
       "cabinet": {
