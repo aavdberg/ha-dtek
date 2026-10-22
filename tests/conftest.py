@@ -259,6 +259,14 @@ def _install_homeassistant_stubs() -> None:
     sensor.SensorEntityDescription = SensorEntityDescription
     sensor.SensorEntity = SensorEntity
 
+    # button
+    button = _ensure_module("homeassistant.components.button")
+
+    class ButtonEntity:
+        pass
+
+    button.ButtonEntity = ButtonEntity
+
     # calendar
     calendar = _ensure_module("homeassistant.components.calendar")
 

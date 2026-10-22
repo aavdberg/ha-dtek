@@ -83,4 +83,4 @@ OUTAGE_TYPE_EMERGENCY: Final = "emergency"
 OUTAGE_TYPE_SCHEDULE: Final = "stabilization_schedule"
 
 # Platforms
-PLATFORMS: Final = ["binary_sensor", "sensor", "calendar"]
+PLATFORMS: Final = ["binary_sensor", "sensor", "calendar", "button"]

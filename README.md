@@ -47,6 +47,7 @@ Be aware that it is not yet confirmed how far in advance the portal publishes a 
   - `sensor.dtek_outage_reason`: Detailed reason (e.g., *Scheduled maintenance*, *Stabilization schedule*, *Emergency repair*).
   - `sensor.dtek_group`: Associated queue group (e.g., `GPV1.2`).
 - **Calendar Platform (`calendar.dtek_outages`)**: Full calendar view of all planned maintenance windows and schedule intervals.
+- **Refresh Button**: Request an immediate data refresh from the DTEK device instead of waiting for the next polling interval. DTEK's existing rate-limit and security cooldowns still apply.
 - **Personal Cabinet Sensors** (created only when you sign in with a DTEK account, and only for the fields your account actually exposes):
   - `sensor.dtek_customer_name`, `sensor.dtek_eic`, `sensor.dtek_address`, `sensor.dtek_object_type`, `sensor.dtek_contract_capacity`
   - `sensor.dtek_meter_serial`, `sensor.dtek_meter_type`
