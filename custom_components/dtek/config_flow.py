@@ -14,8 +14,11 @@ from .api import (
     DtekAddressNotFoundError,
     DtekApiClient,
     DtekAuthError,
+    DtekCabinetProfile,
     DtekConnectionError,
+    DtekCsrfError,
     DtekError,
+    DtekRateLimitError,
     find_house_info,
     normalize_house_number,
 )
@@ -172,13 +175,34 @@ class DtekConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     if account not in user.accounts:
                         errors["base"] = "no_account"
                     else:
-                        profile = await client.async_get_cabinet_profile(token=user.token, account=account)
-                        group = profile.group or group
-                        if not group and profile.city and profile.street and profile.house_number:
-                            lookup = await client.async_get_home_numbers(city=profile.city, street=profile.street)
-                            house = find_house_info(lookup.houses, profile.house_number)
-                            if house is not None:
-                                group = house.group
+                        profile: DtekCabinetProfile | None = None
+                        try:
+                            profile = await client.async_get_cabinet_profile(token=user.token, account=account)
+                        except (DtekConnectionError, DtekRateLimitError) as err:
+                            _LOGGER.warning(
+                                "DTEK setup metadata unavailable (%s); manual queue required", type(err).__name__
+                            )
+                        if profile:
+                            group = profile.group or group
+                            if not group and profile.city and profile.street and profile.house_number:
+                                try:
+                                    lookup = await client.async_get_home_numbers(
+                                        city=profile.city, street=profile.street
+                                    )
+                                except (
+                                    DtekAddressNotFoundError,
+                                    DtekConnectionError,
+                                    DtekCsrfError,
+                                    DtekRateLimitError,
+                                ) as err:
+                                    _LOGGER.warning(
+                                        "DTEK setup address lookup unavailable (%s); manual queue required",
+                                        type(err).__name__,
+                                    )
+                                else:
+                                    house = find_house_info(lookup.houses, profile.house_number)
+                                    if house is not None:
+                                        group = house.group
                         if not group:
                             errors["base"] = "no_group"
                         else:
@@ -190,10 +214,10 @@ class DtekConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                                     **self._new_data,
                                     CONF_ACCOUNT: account,
                                     CONF_GROUP: group,
-                                    CONF_EIC: profile.eic,
-                                    CONF_CITY: profile.city,
-                                    CONF_STREET: profile.street,
-                                    CONF_HOUSE_NUMBER: profile.house_number,
+                                    CONF_EIC: profile.eic if profile else None,
+                                    CONF_CITY: profile.city if profile else None,
+                                    CONF_STREET: profile.street if profile else None,
+                                    CONF_HOUSE_NUMBER: profile.house_number if profile else None,
                                 },
                             )
                 except DtekAuthError:

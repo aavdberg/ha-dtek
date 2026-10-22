@@ -104,6 +104,19 @@ def test_dtek_sensors() -> None:
     assert "meter_serial" not in sensors
 
 
+def test_known_group_remains_available_after_failed_refresh() -> None:
+    coordinator = MagicMock()
+    coordinator.last_update_success = False
+    coordinator.data = DtekState(group="GPV1.2")
+    sensors = {desc.key: DtekSensor(coordinator, desc, "test_entry", "GPV1.2") for desc in SENSOR_DESCRIPTIONS}
+    assert sensors["group"].available is True
+    assert sensors["group"].native_value == "GPV1.2"
+    assert all(not entity.available for key, entity in sensors.items() if key != "group")
+    coordinator.data = None
+    assert sensors["group"].available is False
+    assert sensors["group"].native_value is None
+
+
 @pytest.mark.asyncio
 async def test_entity_availability_during_partial_update_and_recovery() -> None:
     """Known queue and cabinet data survive a public outage-source failure."""
@@ -141,9 +154,17 @@ async def test_entity_availability_during_partial_update_and_recovery() -> None:
     assert await calendar.async_get_events(MagicMock(), now, now + timedelta(days=1)) == []
 
     coordinator.last_update_success = False
-    assert all(not entity.available for entity in [*outage_sensors, *binaries, calendar, cabinet_sensor])
+    assert group_sensor.available is True
+    assert all(
+        not entity.available
+        for entity in [*outage_sensors, *binaries, calendar, cabinet_sensor]
+        if entity is not group_sensor
+    )
     assert all(entity.is_on is None for entity in binaries)
-    assert all(entity.native_value is None for entity in [*outage_sensors, cabinet_sensor])
+    assert group_sensor.native_value == "GPV1.2"
+    assert all(
+        entity.native_value is None for entity in [*outage_sensors, cabinet_sensor] if entity is not group_sensor
+    )
     with pytest.raises(HomeAssistantError, match="outage data is unavailable"):
         await calendar.async_get_events(MagicMock(), now, now + timedelta(days=1))
 

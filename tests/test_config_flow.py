@@ -8,7 +8,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from custom_components.dtek.api import DtekApiClient, DtekAuthError, DtekConnectionError, DtekError
+from custom_components.dtek.api import (
+    DtekAddressNotFoundError,
+    DtekApiClient,
+    DtekAuthError,
+    DtekConnectionError,
+    DtekCsrfError,
+    DtekError,
+    DtekRateLimitError,
+    DtekResponseError,
+)
 from custom_components.dtek.api.models import (
     DtekAddressLookupResult,
     DtekCabinetProfile,
@@ -167,7 +176,7 @@ async def test_new_account_rejects_unknown_account(
     ("error", "expected"),
     [
         (DtekAuthError("expired"), "invalid_auth"),
-        (DtekConnectionError("offline"), "cannot_connect"),
+        (DtekResponseError("wrong account"), "unknown"),
         (DtekError("invalid response"), "unknown"),
     ],
 )
@@ -180,6 +189,70 @@ async def test_new_account_surfaces_errors_and_closes_session(
     client.async_get_cabinet_profile.side_effect = error
     result = await flow.async_step_new_account({"account": "12345"})
     assert result["errors"] == {"base": expected}
+    client.async_close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("manual_group", [None, "GPV2.1"])
+@pytest.mark.parametrize("error_type", [DtekConnectionError, DtekRateLimitError])
+async def test_new_account_recovers_from_metadata_outage(
+    new_account_flow: tuple[DtekConfigFlow, MagicMock],
+    manual_group: str | None,
+    error_type: type[DtekError],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    flow, client = new_account_flow
+    client.async_get_cabinet_profile.side_effect = error_type("temporary")
+    user_input = {"account": "12345"}
+    if manual_group:
+        user_input["group"] = manual_group
+    result = await flow.async_step_new_account(user_input)
+    if manual_group:
+        assert result["type"] == "create_entry"
+        assert result["data"]["group"] == manual_group
+        assert result["data"]["eic"] is None
+        assert result["data"]["city"] is None
+    else:
+        assert result["errors"] == {"base": "no_group"}
+    assert "setup metadata unavailable" in caplog.text
+    client.async_close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error_type",
+    [DtekAddressNotFoundError, DtekConnectionError, DtekCsrfError, DtekRateLimitError],
+)
+async def test_new_account_reports_missing_group_after_address_lookup_failure(
+    new_account_flow: tuple[DtekConfigFlow, MagicMock],
+    error_type: type[DtekError],
+) -> None:
+    flow, client = new_account_flow
+    client.async_get_cabinet_profile.return_value = DtekCabinetProfile(
+        account="12345",
+        city="test_city",
+        street="test_street",
+        house_number="1",
+    )
+    client.async_get_home_numbers.side_effect = error_type("unavailable address")
+    result = await flow.async_step_new_account({"account": "12345"})
+    assert result["errors"] == {"base": "no_group"}
+    result = await flow.async_step_new_account({"account": "12345", "group": "GPV2.1"})
+    assert result["type"] == "create_entry"
+    assert result["data"]["group"] == "GPV2.1"
+    assert result["data"]["city"] == "test_city"
+    assert client.async_close.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_new_account_does_not_ignore_login_connection_error(
+    new_account_flow: tuple[DtekConfigFlow, MagicMock],
+) -> None:
+    flow, client = new_account_flow
+    client.async_cabinet_authenticate.side_effect = DtekConnectionError("offline")
+    result = await flow.async_step_new_account({"account": "12345", "group": "GPV2.1"})
+    assert result["errors"] == {"base": "cannot_connect"}
+    client.async_get_cabinet_profile.assert_not_awaited()
     client.async_close.assert_awaited_once()
 
 
