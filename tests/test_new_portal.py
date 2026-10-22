@@ -80,12 +80,12 @@ async def test_legacy_metadata_requires_exact_account_and_reuses_session(wrong_a
     client._legacy_token = "synthetic_legacy_token"
     client._legacy_account = "12345"
     client._legacy_login = AsyncMock()
+    client._request = AsyncMock(return_value=(200, None, None))
     client._legacy_api = AsyncMock(
         side_effect=[
             {"customer": {"account": "67890" if wrong_account else "12345", "eic": "test_eic", "name": "Test"}},
             {"gpv": "ГПВ1.2"},
             {"debet": 5, "credit": 10},
-            {"status": "success"},
             {
                 "meters": [
                     {
@@ -108,9 +108,9 @@ async def test_legacy_metadata_requires_exact_account_and_reuses_session(wrong_a
         assert profile.customer_name == "Test"
         assert profile.meter_serial == "04860803"
         assert profile.meter_type == "GAMA G3M 144.230"
-        assert client._legacy_api.await_args_list[3].kwargs["item"] == {"account": "12345"}
-        assert client._legacy_api.await_args_list[3].args[0] == PATH_CABINET_CHOICE_APART
-        assert client._legacy_api.await_args_list[4].args[0] == PATH_CABINET_CHOICE_ACCOUNT
+        client._request.assert_awaited_once()
+        assert client._request.await_args.args[1] == LEGACY.with_path(PATH_CABINET_CHOICE_APART)
+        assert client._legacy_api.await_args_list[3].args[0] == PATH_CABINET_CHOICE_ACCOUNT
     client._legacy_login.assert_not_awaited()
 
 
@@ -359,6 +359,7 @@ async def test_legacy_profile_keeps_customer_data_when_meter_endpoint_fails() ->
     client._legacy_token = "synthetic_legacy_token"
     client._legacy_account = "12345"
     client._legacy_login = AsyncMock()
+    client._legacy_select_account = AsyncMock()
     client._legacy_api = AsyncMock(
         side_effect=[
             {"customer": {"account": "12345", "name": "Test"}},
@@ -373,6 +374,36 @@ async def test_legacy_profile_keeps_customer_data_when_meter_endpoint_fails() ->
     assert profile.balance == 10
     assert profile.meter_serial is None
     assert profile.meter_type is None
+
+
+@pytest.mark.asyncio
+async def test_legacy_account_selection_accepts_empty_success_response() -> None:
+    client = DtekNewPortalClient(MagicMock())
+    client._legacy_token = "synthetic_legacy_token"
+    client._request = AsyncMock(return_value=(200, None, None))
+
+    await client._legacy_select_account("12345")
+
+    client._request.assert_awaited_once()
+    args, kwargs = client._request.await_args
+    assert args[0] == "POST"
+    assert args[1] == LEGACY.with_path(PATH_CABINET_CHOICE_APART)
+    assert kwargs["json_body"] == {
+        "token": "synthetic_legacy_token",
+        "account": "12345",
+        "item": {"account": "12345"},
+    }
+    assert kwargs["legacy_authorization"] == "Bearer synthetic_legacy_token"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [401, 403])
+async def test_legacy_account_selection_refreshes_expired_session(status: int) -> None:
+    client = DtekNewPortalClient(MagicMock())
+    client._request = AsyncMock(return_value=(status, None, None))
+
+    with pytest.raises(DtekAuthError, match="session expired"):
+        await client._legacy_select_account("12345")
 
 
 @pytest.mark.asyncio
