@@ -23,6 +23,9 @@ CONF_EIC: Final = "eic"
 # Cabinet constants
 CABINET_BASE_URL: Final = "https://ok.dtek-dnem.com.ua"
 CABINET_DEFAULT_SITE: Final = "dnem"
+CONF_CABINET_PORTAL: Final = "cabinet_portal"
+CABINET_PORTAL_LEGACY: Final = "legacy"
+CABINET_PORTAL_NEW: Final = "new"
 
 # Defaults
 DEFAULT_SCAN_INTERVAL: Final = timedelta(minutes=15)
@@ -80,4 +83,4 @@ OUTAGE_TYPE_EMERGENCY: Final = "emergency"
 OUTAGE_TYPE_SCHEDULE: Final = "stabilization_schedule"
 
 # Platforms
-PLATFORMS: Final = ["binary_sensor", "sensor", "calendar"]
+PLATFORMS: Final = ["binary_sensor", "sensor", "calendar", "button"]

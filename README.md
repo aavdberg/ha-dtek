@@ -47,10 +47,12 @@ Be aware that it is not yet confirmed how far in advance the portal publishes a 
   - `sensor.dtek_outage_reason`: Detailed reason (e.g., *Scheduled maintenance*, *Stabilization schedule*, *Emergency repair*).
   - `sensor.dtek_group`: Associated queue group (e.g., `GPV1.2`).
 - **Calendar Platform (`calendar.dtek_outages`)**: Full calendar view of all planned maintenance windows and schedule intervals.
+- **Refresh Button**: Request an immediate data refresh from the DTEK device instead of waiting for the next polling interval. DTEK's existing rate-limit and security cooldowns still apply.
 - **Personal Cabinet Sensors** (created only when you sign in with a DTEK account, and only for the fields your account actually exposes):
   - `sensor.dtek_customer_name`, `sensor.dtek_eic`, `sensor.dtek_address`, `sensor.dtek_object_type`, `sensor.dtek_contract_capacity`
   - `sensor.dtek_meter_serial`, `sensor.dtek_meter_type`
   - `sensor.dtek_balance` (derived from the account's debit and credit figures)
+  - Customer, contract, address and meter sensors retain their last-known values when the cabinet temporarily omits data. New values replace them when available. This cache is in memory only and is cleared on reload or restart; balance and outage data are not cached this way.
 - **Zero-Config Account Setup**: Signing in with your Personal Cabinet credentials resolves your account number, EIC code, registered address and queue group automatically — no manual city, street or house number entry required.
 - **Automatic Address Resolution**: Enter your settlement, street, and house number to automatically resolve your DTEK queue and local maintenance notices.
 - **Manual Queue Fallback**: Enter your queue (e.g. `GPV1.2`) directly if address lookup is temporarily unreachable.
@@ -96,6 +98,96 @@ adding it as a custom repository first.
    - **Automatic address lookup**: Enter your city/settlement (e.g. `м. Дніпро`), street (`вул. Центральна`), and house number (`1`).
    - **Manual queue selection**: Directly enter your queue identifier (e.g. `GPV1.2`).
 5. Click **Submit**.
+
+### Personal Cabinet reauthentication
+
+If saved cabinet credentials are rejected, follow Home Assistant's
+reauthentication prompt and enter your replacement phone number and password.
+The integration validates them against the entry's regional DSO and selected
+portal, and verifies access to the existing linked account before saving.
+Only the phone number and password are updated; your account, outage group,
+options, and entry/entity IDs are preserved. Invalid credentials or connection
+errors leave the existing configuration unchanged so you can retry.
+Legacy reauthentication also validates access to the selected account through
+the account-metadata endpoint before saving replacement credentials; normal
+polling still tolerates temporary missing metadata.
+
+### New Dnipro Personal Cabinet (`my.dtek`)
+
+The new portal is an **explicit opt-in**, currently only for Dnipro. Existing
+entries keep the legacy `ok.dtek` login unless you change their options.
+
+For an existing cabinet entry, open **Settings → Devices & services → ha-dtek →
+Configure**, choose **New Personal Cabinet (my.dtek)**, and submit. If you reset
+your password on the new website, enter it in the optional new-password field.
+The integration verifies the same linked account before saving the choice.
+Your entry and entity IDs are preserved; do not delete the integration to switch.
+After saving, the entry reloads and authenticates using the selected portal.
+
+For a new entry, select **New Personal Cabinet (my.dtek) — Dnipro**, sign in,
+select your account explicitly. The outage group is discovered from the linked
+cabinet profile or registered address. The group field is optional; enter a
+confirmed group only if automatic detection fails. No queue is guessed from an
+account number. The discovered EIC and address are saved with the entry.
+Other DSOs continue to use the legacy flow.
+
+The new client uses an isolated, in-memory cookie session, locally generated
+PKCE and validated authorization state. It renews an expired OAuth session and
+the account token once on HTTP 401. A failed renewal prompts reauthentication.
+Reloads/restarts establish a fresh session using the configured credentials;
+cookies and tokens are not copied from your browser or saved in config entries.
+Required password/phone changes must be completed on the DTEK website first.
+This uses the portal's first-party web protocol, not an officially registered
+third-party OAuth client or a supported external HA callback.
+
+Verified new-portal metadata includes registered address, EIC, meter serial
+and type. These API requests use the unmodified `X-Id-Token` header; adding an
+authorization scheme prefix causes the meter endpoint to reject access. Meter
+serial/type are fetched from the linked legacy cabinet's meter endpoints, with
+the new-portal meter response retained as a fallback. The integration also
+follows DTEK's first-party authorization handoff to obtain a separate session
+for the old Dnipro cabinet. It does not send the new account token as a legacy
+bearer token or require another password. Legacy requests verify the selected
+account and supplement the profile with the queue group, customer name,
+contracted capacity and balance when provided.
+The verified queue can update the manually entered group after setup.
+The known queue remains visible if public outage requests are temporarily
+unavailable; outage-dependent entities still become unavailable.
+
+The legacy session stays in memory, is renewed once when rejected, and is
+disposed of with the new session. A legacy-source failure is logged without
+discarding working new-portal metadata. Missing fields remain unavailable rather
+than being fabricated. Energy history and live power measurements are not included.
+
+**The new login does not bypass public-portal security checks.** Outage data
+still comes from the separate public shutdowns page. If it returns a challenge,
+account/meter data can remain available while outage entities are unavailable.
+
+### Polling and portal blocking
+
+The integration options use **minutes**, not seconds: the default polling interval
+is 15 minutes, adjustable from 5 to 60 minutes. This is separate from Home
+Assistant's automatic setup retries.
+
+If the public portal returns HTTP 403, HTTP 429, or a recognized Incapsula security
+page (sometimes with HTTP 200), ha-dtek pauses portal requests for **15 minutes**.
+The pause is shared by entries using the same portal and Home Assistant HTTP
+session, including automatic setup retries and manual integration reloads.
+Home Assistant may still show "Retrying", but those attempts do not contact the
+portal during the pause. Requests can resume on the next attempt after it expires.
+A full Home Assistant restart resets the pause; avoid repeated restarts/reloads
+while troubleshooting a suspected block.
+
+When a linked Personal Cabinet still returns a profile, setup and account/meter
+sensors remain available even if the public outage portal fails or is paused.
+Outage sensors and the calendar are marked **unavailable**, not "no outage";
+calendar queries report an error rather than a confirmed empty schedule. If
+neither source can be refreshed, or no cabinet is linked, the update/setup still
+fails. The public cooldown does not block requests to the separate cabinet.
+
+A cooldown reduces request traffic but cannot guarantee that DTEK will remove a
+network or IP block. Missing CSRF tokens alone do not prove a block. This source
+separation is independent of the selected cabinet authentication method.
 
 ---
 

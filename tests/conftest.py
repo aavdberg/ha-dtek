@@ -35,7 +35,10 @@ def _install_homeassistant_stubs() -> None:
         return func
 
     core.HomeAssistant = HomeAssistant
+    core.Event = Any
     core.callback = callback
+    constants = _ensure_module("homeassistant.const")
+    constants.EVENT_HOMEASSISTANT_STOP = "homeassistant_stop"
 
     config_entries = _ensure_module("homeassistant.config_entries")
 
@@ -82,12 +85,21 @@ def _install_homeassistant_stubs() -> None:
         def async_create_entry(self, title: str, data: dict[str, Any]) -> dict[str, Any]:
             return {"type": "create_entry", "title": title, "data": data}
 
+        def _get_reauth_entry(self) -> Any:
+            return self._reauth_entry
+
+        def async_update_reload_and_abort(self, entry: Any, data_updates: dict[str, Any]) -> dict[str, Any]:
+            entry.data = {**entry.data, **data_updates}
+            return {"type": "abort", "reason": "reauth_successful"}
+
     class OptionsFlow:
         def __init__(self, config_entry: Any = None) -> None:
             self.config_entry = config_entry
 
-        def async_show_form(self, step_id: str, data_schema: Any = None) -> dict[str, Any]:
-            return {"type": "form", "step_id": step_id, "data_schema": data_schema}
+        def async_show_form(
+            self, step_id: str, data_schema: Any = None, errors: dict[str, str] | None = None
+        ) -> dict[str, Any]:
+            return {"type": "form", "step_id": step_id, "data_schema": data_schema, "errors": errors or {}}
 
         def async_create_entry(self, title: str, data: dict[str, Any]) -> dict[str, Any]:
             return {"type": "create_entry", "title": title, "data": data}
@@ -140,6 +152,7 @@ def _install_homeassistant_stubs() -> None:
             self.name = name
             self.update_interval = update_interval
             self.data = None
+            self.last_update_success = True
 
         async def async_config_entry_first_refresh(self) -> None:
             pass
@@ -163,6 +176,10 @@ def _install_homeassistant_stubs() -> None:
 
         def __init__(self, coordinator: Any) -> None:
             self.coordinator = coordinator
+
+        @property
+        def available(self) -> bool:
+            return self.coordinator.last_update_success
 
     update_coordinator.UpdateFailed = UpdateFailed
     update_coordinator.DataUpdateCoordinator = DataUpdateCoordinator
@@ -241,6 +258,14 @@ def _install_homeassistant_stubs() -> None:
     sensor.SensorDeviceClass = SensorDeviceClass
     sensor.SensorEntityDescription = SensorEntityDescription
     sensor.SensorEntity = SensorEntity
+
+    # button
+    button = _ensure_module("homeassistant.components.button")
+
+    class ButtonEntity:
+        pass
+
+    button.ButtonEntity = ButtonEntity
 
     # calendar
     calendar = _ensure_module("homeassistant.components.calendar")

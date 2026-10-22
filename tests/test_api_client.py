@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -12,7 +14,9 @@ import pytest
 from custom_components.dtek.api.client import (
     DTEK_TIMEZONE,
     MAX_RETRIES,
+    PORTAL_BLOCK_COOLDOWN_SECONDS,
     DtekApiClient,
+    _response_shape,
     ensure_dtek_timezone,
     find_house_info,
     normalize_house_number,
@@ -25,6 +29,7 @@ from custom_components.dtek.api.exceptions import (
     DtekConnectionError,
     DtekCsrfError,
     DtekRateLimitError,
+    DtekResponseError,
 )
 from custom_components.dtek.api.models import DtekHouseInfo
 
@@ -97,6 +102,193 @@ async def test_ensure_csrf_token_connection_error() -> None:
     client = DtekApiClient(session=session)
     with pytest.raises(DtekConnectionError):
         await client.async_ensure_csrf_token()
+
+
+@pytest.mark.asyncio
+async def test_ensure_csrf_token_forbidden_mentions_possible_waf() -> None:
+    """The HTTP 403 error identifies a possible WAF block and cooldown."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    session.get.return_value = MockResponse(status=403)
+
+    with pytest.raises(DtekRateLimitError, match="portal or its WAF may be blocking"):
+        await DtekApiClient(session).async_ensure_csrf_token()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [403, 429])
+async def test_portal_cooldown_survives_new_clients_and_expires(
+    status: int, monkeypatch: pytest.MonkeyPatch, mock_html_with_csrf: str
+) -> None:
+    """Setup retries/reloads do not reset or extend the 900-second pause."""
+    clock = MagicMock(return_value=1000.0)
+    monkeypatch.setattr("custom_components.dtek.api.client.monotonic", clock)
+    session = MagicMock(spec=aiohttp.ClientSession)
+    session.cookie_jar = []
+    session.get.side_effect = [
+        MockResponse(status=status),
+        MockResponse(status=200, text_data=mock_html_with_csrf),
+    ]
+    with pytest.raises(DtekRateLimitError, match="15 minutes"):
+        await DtekApiClient(session).async_ensure_csrf_token()
+
+    for elapsed in (5, 15, 35, 75, 155, 315, 635, 899):
+        clock.return_value = 1000.0 + elapsed
+        client = DtekApiClient(session)
+        client._csrf_token = "previous_token"
+        with pytest.raises(DtekRateLimitError, match=f"another {900 - elapsed} seconds"):
+            await client.async_ensure_csrf_token()
+        assert client._csrf_token is None
+        assert session.get.call_count == 1
+        session.post.assert_not_called()
+
+    clock.return_value = 1000.0 + PORTAL_BLOCK_COOLDOWN_SECONDS
+    recovered = DtekApiClient(session)
+    assert await recovered.async_ensure_csrf_token() == "test_dtek_csrf_token_1234567890"
+    assert session.get.call_count == 2
+    assert await recovered.async_ensure_csrf_token() == "test_dtek_csrf_token_1234567890"
+    assert session.get.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_portal_cooldown_is_scoped_to_session_and_portal(mock_html_with_csrf: str) -> None:
+    """A blocked portal does not block another region or HA session."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    session.cookie_jar = []
+    session.get.side_effect = [
+        MockResponse(status=403),
+        MockResponse(status=200, text_data=mock_html_with_csrf),
+    ]
+    with pytest.raises(DtekRateLimitError):
+        await DtekApiClient(session).async_ensure_csrf_token()
+
+    other_portal = DtekApiClient(session, base_url="https://www.dtek-kem.com.ua")
+    assert await other_portal.async_ensure_csrf_token() == "test_dtek_csrf_token_1234567890"
+
+    other_session = MagicMock(spec=aiohttp.ClientSession)
+    other_session.cookie_jar = []
+    other_session.get.return_value = MockResponse(status=200, text_data=mock_html_with_csrf)
+    assert await DtekApiClient(other_session).async_ensure_csrf_token() == "test_dtek_csrf_token_1234567890"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_csrf_get_cannot_post_after_another_client_starts_cooldown(
+    mock_html_with_csrf: str,
+) -> None:
+    """A GET already in flight must not lead to a new POST during cooldown."""
+    reading = asyncio.Event()
+    finish = asyncio.Event()
+
+    class DelayedResponse(MockResponse):
+        async def text(self) -> str:
+            reading.set()
+            await finish.wait()
+            return await super().text()
+
+    session = MagicMock(spec=aiohttp.ClientSession)
+    session.cookie_jar = []
+    session.get.side_effect = [
+        DelayedResponse(status=200, text_data=mock_html_with_csrf),
+        MockResponse(status=403),
+    ]
+    first_client = DtekApiClient(session)
+    pending = asyncio.create_task(first_client._async_post_ajax({"method": "getStreets"}))
+    try:
+        await asyncio.wait_for(reading.wait(), timeout=5)
+        with pytest.raises(DtekRateLimitError, match="15 minutes"):
+            await DtekApiClient(session).async_ensure_csrf_token()
+    finally:
+        finish.set()
+        with pytest.raises(DtekRateLimitError, match="another"):
+            await pending
+
+    assert first_client._csrf_token is None
+    assert session.get.call_count == 2
+    session.post.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tag", ["script", "iframe"])
+async def test_portal_challenge_is_not_a_csrf_error(tag: str) -> None:
+    """An HTTP 200 Incapsula challenge is recognized even with stale cookies."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    cookie = MagicMock()
+    cookie.key = "_csrf"
+    cookie.value = "stale_cookie_token"
+    session.cookie_jar = [cookie]
+    session.get.return_value = MockResponse(
+        status=200,
+        text_data=f'<html><{tag} src="/_Incapsula_Resource?test=1"></{tag}></html>',
+    )
+    client = DtekApiClient(session)
+    client._csrf_token = "previous_token"
+    with pytest.raises(DtekRateLimitError, match="Incapsula security page"):
+        await client.async_ensure_csrf_token(force_refresh=True)
+
+    with pytest.raises(DtekRateLimitError, match="another"):
+        await DtekApiClient(session).async_ensure_csrf_token()
+    assert client._csrf_token is None
+    assert session.get.call_count == 1
+    session.post.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_normal_portal_with_incapsula_resource_still_works(mock_html_with_csrf: str) -> None:
+    """An Incapsula script alone is not proof of a challenge."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    session.cookie_jar = []
+    session.get.return_value = MockResponse(
+        status=200,
+        text_data=mock_html_with_csrf + '<script src="/_Incapsula_Resource?test=1"></script>',
+    )
+    assert await DtekApiClient(session).async_ensure_csrf_token() == "test_dtek_csrf_token_1234567890"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "text", "error"),
+    [
+        (403, "", DtekRateLimitError),
+        (429, "", DtekRateLimitError),
+        (200, '<script src="/_Incapsula_Resource?test=1"></script>', DtekRateLimitError),
+        (200, "<html>No token</html>", DtekCsrfError),
+    ],
+)
+async def test_address_resolution_does_not_repeat_failed_portal_request(
+    status: int, text: str, error: type[Exception]
+) -> None:
+    """A failed streets lookup must not trigger another GET for house lookup."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    session.cookie_jar = []
+    session.get.return_value = MockResponse(status=status, text_data=text)
+
+    with pytest.raises(error):
+        await DtekApiClient(session).async_get_home_numbers(city="Example", street="Test")
+    assert session.get.call_count == 1
+    session.post.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "text"),
+    [
+        (403, ""),
+        (429, ""),
+        (200, '<script src="/_Incapsula_Resource?test=1"></script>'),
+    ],
+)
+async def test_schedule_block_is_an_error_not_an_empty_schedule(status: int, text: str) -> None:
+    """Stop at the first blocked legacy method and preserve update failure."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    session.post.return_value = MockResponse(status=status, text_data=text)
+    client = DtekApiClient(session)
+    client._csrf_token = "cached_token"
+
+    with pytest.raises(DtekRateLimitError, match="15 minutes"):
+        await client.async_get_schedule(group="GPV1.2")
+    with pytest.raises(DtekRateLimitError, match="another"):
+        await client.async_get_schedule(group="GPV1.2")
+    assert session.post.call_count == 1
+    session.get.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -275,6 +467,52 @@ async def test_cabinet_objects_info_returns_mapping() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "error"),
+    [(401, DtekAuthError), (403, DtekAuthError), (429, DtekRateLimitError), (503, DtekConnectionError)],
+)
+async def test_strict_cabinet_validation_propagates_http_failures(status: int, error: type[Exception]) -> None:
+    session = MagicMock(spec=aiohttp.ClientSession)
+    session.post.return_value = MockResponse(status=status)
+    client = DtekApiClient(session=session)
+    with pytest.raises(error):
+        await client.async_get_cabinet_objects_info("test_token", "12345", strict=True)
+    assert await client.async_get_cabinet_objects_info("test_token", "12345") == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("wrapped", [False, True])
+async def test_strict_cabinet_validation_accepts_matching_account(wrapped: bool) -> None:
+    data = {"customer": {"account": "12345"}, "status": "success"}
+    session = MagicMock(spec=aiohttp.ClientSession)
+    session.post.return_value = MockResponse(status=200, json_data={"data": data} if wrapped else data)
+    info = await DtekApiClient(session=session).async_get_cabinet_objects_info("test_token", "12345", strict=True)
+    assert info == data
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "data",
+    [
+        None,
+        [],
+        {},
+        {"status": "fail"},
+        {"customer": {"account": "67890"}},
+        {"status": "fail", "data": {"customer": {"account": "12345"}}},
+        {"status": "error", "data": {"customer": {"account": "12345"}}},
+        {"data": {"status": "fail", "customer": {"account": "12345"}}},
+        {"data": {"status": "error", "customer": {"account": "12345"}}},
+    ],
+)
+async def test_strict_cabinet_validation_rejects_invalid_account_response(data: Any) -> None:
+    session = MagicMock(spec=aiohttp.ClientSession)
+    session.post.return_value = MockResponse(status=200, json_data=data)
+    with pytest.raises(DtekResponseError):
+        await DtekApiClient(session=session).async_get_cabinet_objects_info("test_token", "12345", strict=True)
+
+
+@pytest.mark.asyncio
 async def test_cabinet_balance_from_debet_and_credit() -> None:
     """Balance is derived from credit minus debet when no balance field exists."""
     session = MagicMock(spec=aiohttp.ClientSession)
@@ -309,8 +547,9 @@ async def test_cabinet_group_normalises_cyrillic() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cabinet_meters_extracted_from_choice_account() -> None:
+async def test_cabinet_meters_extracted_from_choice_account(caplog: pytest.LogCaptureFixture) -> None:
     """Meter details come from the account selection endpoint."""
+    caplog.set_level(logging.DEBUG, logger="custom_components.dtek.api.client")
     session = MagicMock(spec=aiohttp.ClientSession)
     responses = [
         MockResponse(status=200, json_data={"status": "success"}),
@@ -319,10 +558,11 @@ async def test_cabinet_meters_extracted_from_choice_account() -> None:
             json_data={
                 "meters": [
                     {
-                        "type": "GAMA",
-                        "construction": "G3M 144.230",
-                        "serialNumber": "_04860803",
-                    }
+                        "type": "private_meter_type",
+                        "construction": "private_construction",
+                        "serialNumber": "private_serial_value",
+                        "private_serial_registry_key": "private_value",
+                    },
                 ]
             },
         ),
@@ -332,7 +572,46 @@ async def test_cabinet_meters_extracted_from_choice_account() -> None:
     client = DtekApiClient(session=session)
     meters = await client.async_get_cabinet_meters("token", "123")
 
-    assert meters[0]["serialNumber"] == "_04860803"
+    assert meters[0]["serialNumber"] == "private_serial_value"
+    assert "DTEK legacy meter response shape" in caplog.text
+    assert "serialNumber" in caplog.text
+    assert "private_serial_registry_key" not in caplog.text
+    assert "private_serial_value" not in caplog.text
+    assert "private_meter_type" not in caplog.text
+    assert "private_construction" not in caplog.text
+
+
+def test_response_shape_describes_json_strings_without_private_values() -> None:
+    shape = _response_shape(
+        {
+            "data": '{"meters":[{"serialNumber":"private_serial_value","type":"private_meter_type"}]}',
+            "message": "private_error_message",
+        }
+    )
+    serialized = str(shape)
+
+    assert shape["keys"]["data"]["content"]["keys"]["meters"]["length"] == 1
+    assert "serialNumber" in serialized
+    assert all(
+        value not in serialized for value in ("private_serial_value", "private_meter_type", "private_error_message")
+    )
+
+
+def test_response_shape_bounds_nested_json_strings() -> None:
+    value = "[" * 50 + "0" + "]" * 50
+    shape = _response_shape(value)
+
+    assert isinstance(shape, dict)
+    assert shape["type"] == "json-string"
+    assert len(str(shape)) < 500
+
+
+def test_response_shape_handles_json_recursion_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    def reject_deep_json(value: str) -> None:
+        raise RecursionError
+
+    monkeypatch.setattr("custom_components.dtek.api.client.json.loads", reject_deep_json)
+    assert _response_shape("[0]") == "string"
 
 
 @pytest.mark.asyncio
@@ -391,8 +670,8 @@ def test_parse_cabinet_address_variants() -> None:
 
 
 @pytest.mark.asyncio
-async def test_post_ajax_retries_with_backoff_on_rate_limit(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A 429 is retried with exponential backoff before succeeding."""
+async def test_post_ajax_starts_cooldown_on_rate_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A 429 starts a cooldown instead of retrying after a few seconds."""
     delays: list[float] = []
 
     async def fake_sleep(seconds: float) -> None:
@@ -412,20 +691,16 @@ async def test_post_ajax_retries_with_backoff_on_rate_limit(monkeypatch: pytest.
     client = DtekApiClient(session=session)
     client._csrf_token = "token"
 
-    result = await client._async_post_ajax({"method": "getSchedule"})
+    with pytest.raises(DtekRateLimitError, match="15 minutes"):
+        await client._async_post_ajax({"method": "getSchedule"})
 
-    assert result == {"data": "ok"}
-    assert session.post.call_count == 3
-    # Two backoffs, growing exponentially: ~1s then ~2s plus jitter of 0.1-0.5.
-    assert len(delays) == 2
-    assert 1.1 <= delays[0] <= 1.5
-    assert 2.1 <= delays[1] <= 2.5
-    assert delays[1] > delays[0]
+    assert session.post.call_count == 1
+    assert delays == []
 
 
 @pytest.mark.asyncio
-async def test_post_ajax_raises_rate_limit_after_max_retries(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Persistent 429s give up after MAX_RETRIES and raise."""
+async def test_post_ajax_does_not_retry_rate_limit_during_cooldown(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Repeated calls after a 429 do not send further AJAX requests."""
     delays: list[float] = []
 
     async def fake_sleep(seconds: float) -> None:
@@ -440,12 +715,15 @@ async def test_post_ajax_raises_rate_limit_after_max_retries(monkeypatch: pytest
     client = DtekApiClient(session=session)
     client._csrf_token = "token"
 
-    with pytest.raises(DtekRateLimitError, match="maximum retries"):
+    with pytest.raises(DtekRateLimitError, match="15 minutes"):
         await client._async_post_ajax({"method": "getSchedule"})
 
-    # Initial attempt plus MAX_RETRIES retries, so MAX_RETRIES backoffs.
-    assert session.post.call_count == MAX_RETRIES + 1
-    assert len(delays) == MAX_RETRIES
+    with pytest.raises(DtekRateLimitError, match="another"):
+        await client._async_post_ajax({"method": "getSchedule"})
+
+    assert session.post.call_count == 1
+    session.get.assert_not_called()
+    assert delays == []
 
 
 @pytest.mark.asyncio

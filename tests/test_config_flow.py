@@ -2,10 +2,29 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from custom_components.dtek.api import (
+    DtekAddressNotFoundError,
+    DtekApiClient,
+    DtekAuthError,
+    DtekConnectionError,
+    DtekCsrfError,
+    DtekError,
+    DtekRateLimitError,
+    DtekResponseError,
+)
+from custom_components.dtek.api.models import (
+    DtekAddressLookupResult,
+    DtekCabinetProfile,
+    DtekCabinetUser,
+    DtekHouseInfo,
+)
+from custom_components.dtek.api.new_portal import DtekNewPortalClient
 from custom_components.dtek.config_flow import DtekConfigFlow
 
 
@@ -41,6 +60,200 @@ def test_config_flow_instantiation() -> None:
     flow = DtekConfigFlow()
     assert flow.VERSION == 1
     assert flow._dso == "dtek-dnem"
+
+
+@pytest.fixture
+def new_account_flow(monkeypatch: pytest.MonkeyPatch) -> tuple[DtekConfigFlow, MagicMock]:
+    flow = DtekConfigFlow()
+    flow.hass = MagicMock()
+    flow._new_accounts = ["12345"]
+    flow._new_data = {"dso": "dtek-dnem", "phone": "0000000000", "password": "test_password", "cabinet_portal": "new"}
+    flow.async_set_unique_id = AsyncMock()
+    flow._abort_if_unique_id_configured = MagicMock()
+    flow.async_show_form = lambda **kwargs: {"type": "form", **kwargs}
+    flow.async_create_entry = lambda **kwargs: {"type": "create_entry", **kwargs}
+    client = MagicMock()
+    client.async_cabinet_authenticate = AsyncMock(
+        return_value=DtekCabinetUser(token="test_token", phone="0000000000", accounts=["12345"])
+    )
+    client.async_get_cabinet_profile = AsyncMock(
+        return_value=DtekCabinetProfile(
+            account="12345",
+            group="GPV1.2",
+            eic="test_eic",
+            city="test_city",
+            street="test_street",
+            house_number="1",
+        )
+    )
+    client.async_get_home_numbers = AsyncMock()
+    client.async_close = AsyncMock()
+    monkeypatch.setattr("custom_components.dtek.config_flow.DtekNewPortalClient", MagicMock(return_value=client))
+    return flow, client
+
+
+@pytest.mark.asyncio
+async def test_new_account_form_does_not_require_group(new_account_flow: tuple[DtekConfigFlow, MagicMock]) -> None:
+    flow, client = new_account_flow
+    result = await flow.async_step_new_account()
+    assert result["data_schema"]({"account": "12345"}) == {"account": "12345"}
+    client.async_cabinet_authenticate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_new_account_detects_and_persists_profile(new_account_flow: tuple[DtekConfigFlow, MagicMock]) -> None:
+    flow, client = new_account_flow
+    result = await flow.async_step_new_account({"account": "12345"})
+    assert result["type"] == "create_entry"
+    assert result["data"] == {
+        **flow._new_data,
+        "account": "12345",
+        "group": "GPV1.2",
+        "eic": "test_eic",
+        "city": "test_city",
+        "street": "test_street",
+        "house_number": "1",
+    }
+    client.async_get_cabinet_profile.assert_awaited_once_with(token="test_token", account="12345")
+    client.async_get_home_numbers.assert_not_awaited()
+    client.async_close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("manual_group", [None, " gpv2.1 "])
+async def test_new_account_requires_confirmed_group_when_unresolved(
+    new_account_flow: tuple[DtekConfigFlow, MagicMock],
+    manual_group: str | None,
+) -> None:
+    flow, client = new_account_flow
+    client.async_get_cabinet_profile.return_value = DtekCabinetProfile(account="12345")
+    user_input = {"account": "12345"}
+    if manual_group is not None:
+        user_input["group"] = manual_group
+    result = await flow.async_step_new_account(user_input)
+    if manual_group is None:
+        assert result["errors"] == {"base": "no_group"}
+    else:
+        assert result["type"] == "create_entry"
+        assert result["data"]["group"] == "GPV2.1"
+    client.async_close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_new_account_uses_address_group(new_account_flow: tuple[DtekConfigFlow, MagicMock]) -> None:
+    flow, client = new_account_flow
+    client.async_get_cabinet_profile.return_value = DtekCabinetProfile(
+        account="12345",
+        city="test_city",
+        street="test_street",
+        house_number="1",
+    )
+    client.async_get_home_numbers.return_value = DtekAddressLookupResult(
+        result=True,
+        houses={"1": DtekHouseInfo(house_num="1", group="GPV3.1")},
+    )
+    result = await flow.async_step_new_account({"account": "12345"})
+    assert result["data"]["group"] == "GPV3.1"
+    client.async_get_home_numbers.assert_awaited_once_with(city="test_city", street="test_street")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changed_after_login", [False, True])
+async def test_new_account_rejects_unknown_account(
+    new_account_flow: tuple[DtekConfigFlow, MagicMock],
+    changed_after_login: bool,
+) -> None:
+    flow, client = new_account_flow
+    if changed_after_login:
+        client.async_cabinet_authenticate.return_value = DtekCabinetUser(token="test_token", phone="0000000000")
+    result = await flow.async_step_new_account({"account": "12345" if changed_after_login else "67890"})
+    assert result["errors"] == {"base": "no_account"}
+    client.async_get_cabinet_profile.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (DtekAuthError("expired"), "invalid_auth"),
+        (DtekResponseError("wrong account"), "unknown"),
+        (DtekError("invalid response"), "unknown"),
+    ],
+)
+async def test_new_account_surfaces_errors_and_closes_session(
+    new_account_flow: tuple[DtekConfigFlow, MagicMock],
+    error: DtekError,
+    expected: str,
+) -> None:
+    flow, client = new_account_flow
+    client.async_get_cabinet_profile.side_effect = error
+    result = await flow.async_step_new_account({"account": "12345"})
+    assert result["errors"] == {"base": expected}
+    client.async_close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("manual_group", [None, "GPV2.1"])
+@pytest.mark.parametrize("error_type", [DtekConnectionError, DtekRateLimitError])
+async def test_new_account_recovers_from_metadata_outage(
+    new_account_flow: tuple[DtekConfigFlow, MagicMock],
+    manual_group: str | None,
+    error_type: type[DtekError],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    flow, client = new_account_flow
+    client.async_get_cabinet_profile.side_effect = error_type("temporary")
+    user_input = {"account": "12345"}
+    if manual_group:
+        user_input["group"] = manual_group
+    result = await flow.async_step_new_account(user_input)
+    if manual_group:
+        assert result["type"] == "create_entry"
+        assert result["data"]["group"] == manual_group
+        assert result["data"]["eic"] is None
+        assert result["data"]["city"] is None
+    else:
+        assert result["errors"] == {"base": "no_group"}
+    assert "setup metadata unavailable" in caplog.text
+    client.async_close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error_type",
+    [DtekAddressNotFoundError, DtekConnectionError, DtekCsrfError, DtekRateLimitError],
+)
+async def test_new_account_reports_missing_group_after_address_lookup_failure(
+    new_account_flow: tuple[DtekConfigFlow, MagicMock],
+    error_type: type[DtekError],
+) -> None:
+    flow, client = new_account_flow
+    client.async_get_cabinet_profile.return_value = DtekCabinetProfile(
+        account="12345",
+        city="test_city",
+        street="test_street",
+        house_number="1",
+    )
+    client.async_get_home_numbers.side_effect = error_type("unavailable address")
+    result = await flow.async_step_new_account({"account": "12345"})
+    assert result["errors"] == {"base": "no_group"}
+    result = await flow.async_step_new_account({"account": "12345", "group": "GPV2.1"})
+    assert result["type"] == "create_entry"
+    assert result["data"]["group"] == "GPV2.1"
+    assert result["data"]["city"] == "test_city"
+    assert client.async_close.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_new_account_does_not_ignore_login_connection_error(
+    new_account_flow: tuple[DtekConfigFlow, MagicMock],
+) -> None:
+    flow, client = new_account_flow
+    client.async_cabinet_authenticate.side_effect = DtekConnectionError("offline")
+    result = await flow.async_step_new_account({"account": "12345", "group": "GPV2.1"})
+    assert result["errors"] == {"base": "cannot_connect"}
+    client.async_get_cabinet_profile.assert_not_awaited()
+    client.async_close.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -111,3 +324,210 @@ def test_cabinet_site_and_base_url_mapping() -> None:
     sites = {cabinet_site_for_dso(dso) for dso in SUPPORTED_DSOS}
     assert len(sites) == len(SUPPORTED_DSOS)
     assert cabinet_base_url_for_dso("dtek-oem") == "https://ok.dtek-oem.com.ua"
+
+
+@pytest.fixture
+def reauth_flow(monkeypatch: pytest.MonkeyPatch) -> tuple[DtekConfigFlow, MagicMock, dict[str, MagicMock]]:
+    """Use real client classes with mocked network methods for both portals."""
+    clients = {}
+    for portal, client_class in (("legacy", DtekApiClient), ("new", DtekNewPortalClient)):
+        client = MagicMock()
+        client.async_cabinet_authenticate = AsyncMock(
+            return_value=DtekCabinetUser(token="test_token", phone="0000000000", accounts=["12345"])
+        )
+        client.async_get_cabinet_profile = AsyncMock(return_value=DtekCabinetProfile(account="12345"))
+        client.async_get_cabinet_objects_info = AsyncMock(return_value={"customer": {"account": "12345"}})
+        monkeypatch.setattr(client_class, "async_cabinet_authenticate", client.async_cabinet_authenticate)
+        monkeypatch.setattr(client_class, "async_get_cabinet_profile", client.async_get_cabinet_profile)
+        clients[portal] = client
+    monkeypatch.setattr(
+        DtekApiClient, "async_get_cabinet_objects_info", clients["legacy"].async_get_cabinet_objects_info
+    )
+    clients["new"].async_close = AsyncMock()
+    monkeypatch.setattr(DtekNewPortalClient, "async_close", clients["new"].async_close)
+
+    entry = MagicMock()
+    entry.data = {
+        "dso": "dtek-oem",
+        "phone": "0000000000",
+        "password": "old_test_password",
+        "account": "12345",
+        "group": "GPV1.2",
+        "eic": "test_eic",
+        "city": "test_city",
+        "street": "test_street",
+        "house_number": "test_house",
+    }
+    entry.options = {"update_interval": 30}
+    flow = DtekConfigFlow()
+    flow.hass = MagicMock()
+    flow._get_reauth_entry = MagicMock(return_value=entry)
+    flow.async_update_reload_and_abort = MagicMock(return_value={"type": "abort", "reason": "reauth_successful"})
+    return flow, entry, clients
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("dso", "site", "portal_source"),
+    [
+        ("dtek-dnem", "dnem", None),
+        ("dtek-kem", "kem", None),
+        ("dtek-krem", "krem", None),
+        ("dtek-oem", "oem", None),
+        ("dtek-dnem", "dnem", "data"),
+        ("dtek-dnem", "dnem", "options"),
+    ],
+)
+async def test_reauth_updates_only_credentials_for_existing_dso(
+    reauth_flow: tuple[DtekConfigFlow, MagicMock, dict[str, MagicMock]],
+    dso: str,
+    site: str,
+    portal_source: str | None,
+) -> None:
+    flow, entry, clients = reauth_flow
+    entry.data["dso"] = dso
+    if portal_source == "data":
+        entry.data["cabinet_portal"] = "new"
+    elif portal_source == "options":
+        entry.data["cabinet_portal"] = "legacy"
+        entry.options["cabinet_portal"] = "new"
+    original_data = entry.data.copy()
+    original_options = entry.options.copy()
+    result = await flow.async_step_reauth(entry.data)
+    assert result["step_id"] == "reauth_confirm"
+    assert result["errors"] == {}
+    for client in clients.values():
+        client.async_cabinet_authenticate.assert_not_awaited()
+    assert set(result["data_schema"].schema) == {"phone", "password"}
+
+    result = await flow.async_step_reauth_confirm({"phone": " 1111111111 ", "password": " new_test_password "})
+    assert result == {"type": "abort", "reason": "reauth_successful"}
+    portal = "new" if portal_source else "legacy"
+    clients[portal].async_cabinet_authenticate.assert_awaited_once_with(
+        phone="1111111111", password=" new_test_password ", site=site
+    )
+    clients[portal].async_get_cabinet_profile.assert_awaited_once_with(token="test_token", account="12345", site=site)
+    clients["legacy" if portal == "new" else "new"].async_cabinet_authenticate.assert_not_awaited()
+    flow.async_update_reload_and_abort.assert_called_once_with(
+        entry, data_updates={"phone": "1111111111", "password": " new_test_password "}
+    )
+    assert entry.data == original_data
+    assert entry.options == original_options
+    assert clients["new"].async_close.await_count == (1 if portal == "new" else 0)
+    if portal == "legacy":
+        clients["legacy"].async_get_cabinet_objects_info.assert_awaited_once_with(
+            token="test_token",
+            account="12345",
+            strict=True,
+        )
+    else:
+        clients["legacy"].async_get_cabinet_objects_info.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("portal", ["legacy", "new"])
+@pytest.mark.parametrize("operation", ["async_cabinet_authenticate", "async_get_cabinet_profile"])
+@pytest.mark.parametrize(
+    ("exception", "error"),
+    [(DtekAuthError, "invalid_auth"), (DtekConnectionError, "cannot_connect"), (DtekError, "unknown")],
+)
+async def test_reauth_failures_preserve_configuration(
+    reauth_flow: tuple[DtekConfigFlow, MagicMock, dict[str, MagicMock]],
+    portal: str,
+    operation: str,
+    exception: type[DtekError],
+    error: str,
+) -> None:
+    flow, entry, clients = reauth_flow
+    entry.data["dso"] = "dtek-dnem"
+    entry.options["cabinet_portal"] = portal
+    original_data, original_options = entry.data.copy(), entry.options.copy()
+    getattr(clients[portal], operation).side_effect = exception("test failure")
+
+    result = await flow.async_step_reauth_confirm({"phone": "1111111111", "password": "new_test_password"})
+
+    assert result["step_id"] == "reauth_confirm"
+    assert result["errors"] == {"base": error}
+    flow.async_update_reload_and_abort.assert_not_called()
+    assert entry.data == original_data
+    assert entry.options == original_options
+    assert clients["new"].async_close.await_count == (1 if portal == "new" else 0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["timeout", "503", "401", "invalid_json", "wrong_account"])
+async def test_legacy_reauth_http_validation_failure_preserves_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    entry = MagicMock()
+    entry.data = {"dso": "dtek-dnem", "account": "12345", "phone": "0000000000", "password": "old_test_password"}
+    entry.options = {}
+    original = entry.data.copy()
+    flow = DtekConfigFlow()
+    flow.hass = MagicMock()
+    flow._get_reauth_entry = MagicMock(return_value=entry)
+    flow.async_show_form = lambda **kwargs: {"type": "form", **kwargs}
+    flow.async_update_reload_and_abort = MagicMock()
+    session = MagicMock()
+    response = AsyncMock()
+    response.status = int(failure) if failure in ("503", "401") else 200
+    response.json.return_value = {"customer": {"account": "67890"}}
+    if failure == "invalid_json":
+        response.json.side_effect = ValueError("private response data")
+    session.post.return_value.__aenter__ = AsyncMock(return_value=response)
+    session.post.return_value.__aexit__ = AsyncMock(return_value=False)
+    if failure == "timeout":
+        session.post.return_value.__aenter__.side_effect = TimeoutError("private address")
+    monkeypatch.setattr("custom_components.dtek.config_flow.async_get_clientsession", lambda hass: session)
+    monkeypatch.setattr(
+        DtekApiClient,
+        "async_cabinet_authenticate",
+        AsyncMock(
+            return_value=DtekCabinetUser(token="test_token", phone="1111111111", accounts=["12345"]),
+        ),
+    )
+    result = await flow.async_step_reauth_confirm({"phone": "1111111111", "password": "new_test_password"})
+    expected = "invalid_auth" if failure == "401" else "cannot_connect" if failure in ("timeout", "503") else "unknown"
+    assert result["errors"] == {"base": expected}
+    flow.async_update_reload_and_abort.assert_not_called()
+    assert entry.data == original
+    session.post.assert_called_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("portal", ["legacy", "new"])
+async def test_reauth_rejects_different_account(
+    reauth_flow: tuple[DtekConfigFlow, MagicMock, dict[str, MagicMock]], portal: str
+) -> None:
+    flow, entry, clients = reauth_flow
+    entry.data["dso"] = "dtek-dnem"
+    entry.options["cabinet_portal"] = portal
+    original_data, original_options = entry.data.copy(), entry.options.copy()
+    clients[portal].async_cabinet_authenticate.return_value = DtekCabinetUser(
+        token="test_token", phone="1111111111", accounts=["67890"]
+    )
+
+    result = await flow.async_step_reauth_confirm({"phone": "1111111111", "password": "new_test_password"})
+
+    assert result["errors"] == {"base": "no_account"}
+    clients[portal].async_get_cabinet_profile.assert_not_awaited()
+    flow.async_update_reload_and_abort.assert_not_called()
+    assert entry.data == original_data
+    assert entry.options == original_options
+    assert clients["new"].async_close.await_count == (1 if portal == "new" else 0)
+
+
+@pytest.mark.parametrize("language", ["strings", "en", "nl", "uk"])
+def test_reauth_translations(language: str) -> None:
+    root = Path(__file__).resolve().parents[1] / "custom_components" / "dtek"
+    path = root / "strings.json" if language == "strings" else root / "translations" / f"{language}.json"
+    config = json.loads(path.read_text(encoding="utf-8"))["config"]
+    form = config["step"]["reauth_confirm"]
+    assert form["title"]
+    assert form["description"]
+    assert set(form["data"]) == {"phone", "password"}
+    assert all(form["data"].values())
+    assert config["abort"]["reauth_successful"]
+    for error in ("invalid_auth", "cannot_connect", "unknown", "no_account"):
+        assert config["error"][error]
