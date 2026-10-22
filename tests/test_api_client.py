@@ -491,7 +491,20 @@ async def test_strict_cabinet_validation_accepts_matching_account(wrapped: bool)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("data", [None, [], {}, {"status": "fail"}, {"customer": {"account": "67890"}}])
+@pytest.mark.parametrize(
+    "data",
+    [
+        None,
+        [],
+        {},
+        {"status": "fail"},
+        {"customer": {"account": "67890"}},
+        {"status": "fail", "data": {"customer": {"account": "12345"}}},
+        {"status": "error", "data": {"customer": {"account": "12345"}}},
+        {"data": {"status": "fail", "customer": {"account": "12345"}}},
+        {"data": {"status": "error", "customer": {"account": "12345"}}},
+    ],
+)
 async def test_strict_cabinet_validation_rejects_invalid_account_response(data: Any) -> None:
     session = MagicMock(spec=aiohttp.ClientSession)
     session.post.return_value = MockResponse(status=200, json_data=data)

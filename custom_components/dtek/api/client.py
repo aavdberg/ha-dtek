@@ -945,6 +945,8 @@ class DtekApiClient:
             if strict:
                 raise DtekResponseError("DTEK cabinet account validation returned an invalid response")
             return {}
+        if strict and data.get("status") in ("fail", "error"):
+            raise DtekResponseError("DTEK cabinet account validation was unsuccessful")
         # Some deployments wrap the payload in a "data" envelope.
         if "customer" not in data and isinstance(data.get("data"), dict):
             data = data["data"]
