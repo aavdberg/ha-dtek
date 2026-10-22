@@ -23,7 +23,13 @@ from .client import (
     normalize_group,
     parse_cabinet_address,
 )
-from .endpoints import PATH_CABINET_BALANCE, PATH_CABINET_OBJECTS_INFO, PATH_CABINET_POWERTRACK
+from .endpoints import (
+    PATH_CABINET_BALANCE,
+    PATH_CABINET_CHOICE_ACCOUNT,
+    PATH_CABINET_CHOICE_APART,
+    PATH_CABINET_OBJECTS_INFO,
+    PATH_CABINET_POWERTRACK,
+)
 from .exceptions import DtekAuthError, DtekConnectionError, DtekError, DtekRateLimitError, DtekResponseError
 from .models import DtekCabinetProfile, DtekCabinetUser
 
@@ -97,7 +103,14 @@ class DtekNewPortalClient(DtekApiClient):
             if (
                 method != "POST"
                 or url.path
-                not in ("/api/auth/sms", PATH_CABINET_OBJECTS_INFO, PATH_CABINET_BALANCE, PATH_CABINET_POWERTRACK)
+                not in (
+                    "/api/auth/sms",
+                    PATH_CABINET_OBJECTS_INFO,
+                    PATH_CABINET_BALANCE,
+                    PATH_CABINET_POWERTRACK,
+                    PATH_CABINET_CHOICE_APART,
+                    PATH_CABINET_CHOICE_ACCOUNT,
+                )
                 or token
             ):
                 raise DtekResponseError("New DTEK portal returned an unexpected legacy destination")
@@ -326,7 +339,7 @@ class DtekNewPortalClient(DtekApiClient):
         self._legacy_token = token
         self._legacy_account = account
 
-    async def _legacy_api(self, path: str, account: str, **values: str) -> dict[str, Any]:
+    async def _legacy_api(self, path: str, account: str, **values: Any) -> dict[str, Any]:
         status, payload, _ = await self._request(
             "POST",
             LEGACY.with_path(path),
@@ -363,6 +376,36 @@ class DtekNewPortalClient(DtekApiClient):
                     debit, credit = _to_float(balance.get("debet")), _to_float(balance.get("credit"))
                     if amount is None and (debit is not None or credit is not None):
                         amount = (credit or 0.0) - (debit or 0.0)
+                    meter_serial = None
+                    meter_type = None
+                    try:
+                        await self._legacy_api(
+                            PATH_CABINET_CHOICE_APART,
+                            account,
+                            item={"account": account},
+                        )
+                        meter_data = await self._legacy_api(PATH_CABINET_CHOICE_ACCOUNT, account, site="dnem")
+                        meters = meter_data.get("meters")
+                        meter = (
+                            next((item for item in meters if isinstance(item, dict)), None)
+                            if isinstance(meters, list)
+                            else None
+                        )
+                        if meter is not None:
+                            serial = _text(meter.get("serialNumber")) or _text(meter.get("serial_number"))
+                            meter_serial = serial.lstrip("_") if serial else None
+                            meter_type = (
+                                " ".join(
+                                    value
+                                    for value in (_text(meter.get("type")), _text(meter.get("construction")))
+                                    if value
+                                )
+                                or None
+                            )
+                    except DtekAuthError:
+                        raise
+                    except DtekError as err:
+                        _LOGGER.warning("DTEK legacy meter metadata unavailable: %s", err)
                     return DtekCabinetProfile(
                         account=account,
                         customer_name=_text(customer.get("name")),
@@ -373,6 +416,8 @@ class DtekNewPortalClient(DtekApiClient):
                         object_type=_text(customer.get("objectType")),
                         contract_capacity=_format_capacity(customer.get("demPerm")),
                         contract_date=_text(customer.get("contractDate")),
+                        meter_serial=meter_serial,
+                        meter_type=meter_type,
                     )
                 except DtekAuthError:
                     self._legacy_token = None
@@ -456,6 +501,8 @@ class DtekNewPortalClient(DtekApiClient):
             contract_capacity=legacy.contract_capacity,
             contract_date=profile.contract_date or legacy.contract_date,
             eic=profile.eic or legacy.eic,
+            meter_serial=legacy.meter_serial or profile.meter_serial,
+            meter_type=legacy.meter_type or profile.meter_type,
             address=address,
             city=profile.city or city,
             street=profile.street or street,

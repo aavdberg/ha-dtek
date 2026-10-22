@@ -11,6 +11,7 @@ import aiohttp
 import pytest
 from yarl import URL
 
+from custom_components.dtek.api.endpoints import PATH_CABINET_CHOICE_ACCOUNT, PATH_CABINET_CHOICE_APART
 from custom_components.dtek.api.exceptions import (
     DtekAuthError,
     DtekConnectionError,
@@ -84,6 +85,16 @@ async def test_legacy_metadata_requires_exact_account_and_reuses_session(wrong_a
             {"customer": {"account": "67890" if wrong_account else "12345", "eic": "test_eic", "name": "Test"}},
             {"gpv": "ГПВ1.2"},
             {"debet": 5, "credit": 10},
+            {"status": "success"},
+            {
+                "meters": [
+                    {
+                        "type": "GAMA",
+                        "construction": "G3M 144.230",
+                        "serialNumber": "_04860803",
+                    }
+                ]
+            },
         ]
     )
     if wrong_account:
@@ -95,6 +106,11 @@ async def test_legacy_metadata_requires_exact_account_and_reuses_session(wrong_a
         assert profile.group == "GPV1.2"
         assert profile.balance == 5
         assert profile.customer_name == "Test"
+        assert profile.meter_serial == "04860803"
+        assert profile.meter_type == "GAMA G3M 144.230"
+        assert client._legacy_api.await_args_list[3].kwargs["item"] == {"account": "12345"}
+        assert client._legacy_api.await_args_list[3].args[0] == PATH_CABINET_CHOICE_APART
+        assert client._legacy_api.await_args_list[4].args[0] == PATH_CABINET_CHOICE_ACCOUNT
     client._legacy_login.assert_not_awaited()
 
 
@@ -121,12 +137,19 @@ async def test_optional_legacy_data_preserves_new_meter_metadata(error: DtekErro
         ]
     )
     client._legacy_profile = AsyncMock(
-        return_value=DtekCabinetProfile(account="12345", group="GPV1.2", customer_name="Test", balance=5),
+        return_value=DtekCabinetProfile(
+            account="12345",
+            group="GPV1.2",
+            customer_name="Test",
+            balance=5,
+            meter_serial="legacy_meter",
+            meter_type="Legacy type",
+        ),
         side_effect=error,
     )
     profile = await client.async_get_cabinet_profile("unused", "12345")
-    assert profile.meter_serial == "new_meter"
-    assert profile.meter_type == "new_type"
+    assert profile.meter_serial == ("new_meter" if error else "legacy_meter")
+    assert profile.meter_type == ("new_type" if error else "Legacy type")
     assert profile.group == (None if error else "GPV1.2")
     assert profile.customer_name == (None if error else "Test")
     assert not client._expired
@@ -328,6 +351,28 @@ async def test_meter_for_wrong_account_is_not_accepted() -> None:
     client._api = AsyncMock(side_effect=[accounts_response(), {"accountNumber": "67890"}])
     with pytest.raises(DtekResponseError, match="selected account"):
         await client.async_get_cabinet_profile("unused", "12345")
+
+
+@pytest.mark.asyncio
+async def test_legacy_profile_keeps_customer_data_when_meter_endpoint_fails() -> None:
+    client = DtekNewPortalClient(MagicMock())
+    client._legacy_token = "synthetic_legacy_token"
+    client._legacy_account = "12345"
+    client._legacy_login = AsyncMock()
+    client._legacy_api = AsyncMock(
+        side_effect=[
+            {"customer": {"account": "12345", "name": "Test"}},
+            {"debet": 0, "credit": 10},
+            DtekConnectionError("meter endpoint unavailable"),
+        ]
+    )
+
+    profile = await client._legacy_profile("12345")
+
+    assert profile.customer_name == "Test"
+    assert profile.balance == 10
+    assert profile.meter_serial is None
+    assert profile.meter_type is None
 
 
 @pytest.mark.asyncio

@@ -133,12 +133,14 @@ Required password/phone changes must be completed on the DTEK website first.
 This uses the portal's first-party web protocol, not an officially registered
 third-party OAuth client or a supported external HA callback.
 
-Verified new-portal metadata includes registered address, EIC and meter
-serial/type. The integration also follows DTEK's first-party authorization
-handoff to obtain a separate session for the old Dnipro cabinet. It does not send
-the new account token as a legacy bearer token or require another password.
-Legacy requests verify the selected account and supplement the profile with the
-queue group, customer name, contracted capacity and balance when provided.
+Verified new-portal metadata includes registered address and EIC. Meter
+serial/type are fetched from the linked legacy cabinet's meter endpoints, with
+the new-portal meter response retained as a fallback. The integration also
+follows DTEK's first-party authorization handoff to obtain a separate session
+for the old Dnipro cabinet. It does not send the new account token as a legacy
+bearer token or require another password. Legacy requests verify the selected
+account and supplement the profile with the queue group, customer name,
+contracted capacity and balance when provided.
 The verified queue can update the manually entered group after setup.
 
 The legacy session stays in memory, is renewed once when rejected, and is
