@@ -28,7 +28,41 @@ from custom_components.dtek.api.new_portal import (
     LEGACY_CALLBACK,
     PORTAL,
     DtekNewPortalClient,
+    _response_shape,
 )
+
+
+def test_response_shape_reports_structure_without_private_values() -> None:
+    shape = _response_shape(
+        {
+            "meters": [
+                {
+                    "serialNumber": "private_serial_value",
+                    "type": "private_meter_type",
+                    "nested": {"token": "private_token_value"},
+                }
+            ],
+            "private identifier": "private_account_value",
+            "meter_registry": {"synthetic_private_serial_123": {"type": "private_nested_type"}},
+        }
+    )
+    serialized = json.dumps(shape)
+
+    assert shape["keys"]["meters"]["length"] == 1
+    assert shape["keys"]["meters"]["items"][0]["keys"]["serialNumber"] == "string"
+    assert shape["keys"]["meters"]["items"][0]["keys"]["type"] == "string"
+    assert any(key.startswith("<other-key-") for key in shape["keys"])
+    assert all(
+        value not in serialized
+        for value in (
+            "private_serial_value",
+            "private_meter_type",
+            "private_token_value",
+            "private_account_value",
+            "private_nested_type",
+            "synthetic_private_serial_123",
+        )
+    )
 
 
 @pytest.mark.asyncio

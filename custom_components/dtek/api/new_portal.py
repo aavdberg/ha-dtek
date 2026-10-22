@@ -43,10 +43,63 @@ LEGACY_CALLBACK = LEGACY / "auth/callback"
 # The legacy backend performs the code exchange using its first-party verifier.
 LEGACY_CHALLENGE = "T0wiJiK1mBexC-LFD46zLufVr-iPXXPSYDMxrsYp_U8"
 _LOGGER = logging.getLogger(__name__)
+_RESPONSE_SCHEMA_KEYS = frozenset(
+    {
+        "accountNumber",
+        "construction",
+        "data",
+        "installationEic",
+        "meterType",
+        "meters",
+        "serial_number",
+        "serialNum",
+        "serialNumber",
+        "type",
+    }
+)
 
 
 def _text(value: Any) -> str | None:
     return value.strip() or None if isinstance(value, str) else None
+
+
+def _response_shape(value: Any, depth: int = 0) -> dict[str, Any] | str:
+    """Describe a bounded response structure without including data values."""
+    if isinstance(value, dict):
+        keys: dict[str, Any] = {}
+        for index, key in enumerate(sorted(value, key=lambda item: str(item))[:20]):
+            safe_key = key if key in _RESPONSE_SCHEMA_KEYS else f"<other-key-{index}>"
+            keys[safe_key] = _shape_value(value[key], depth)
+        return {"type": "object", "key_count": len(value), "keys": keys}
+    return _shape_value(value, depth)
+
+
+def _shape_value(value: Any, depth: int) -> dict[str, Any] | str:
+    if depth >= 4:
+        return _value_type(value)
+    if isinstance(value, dict):
+        return _response_shape(value, depth + 1)
+    if isinstance(value, list):
+        return {
+            "type": "array",
+            "length": len(value),
+            "items": [_shape_value(item, depth + 1) for item in value[:3]],
+        }
+    return _value_type(value)
+
+
+def _value_type(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    return type(value).__name__
 
 
 class DtekNewPortalClient(DtekApiClient):
@@ -398,6 +451,7 @@ class DtekNewPortalClient(DtekApiClient):
                     try:
                         await self._legacy_select_account(account)
                         meter_data = await self._legacy_api(PATH_CABINET_CHOICE_ACCOUNT, account, site="dnem")
+                        _LOGGER.debug("DTEK legacy meter response shape: %s", _response_shape(meter_data))
                         meters = meter_data.get("meters")
                         meter = (
                             next((item for item in meters if isinstance(item, dict)), None)
@@ -490,6 +544,7 @@ class DtekNewPortalClient(DtekApiClient):
             f"/api/billing-service/api/meters/household/{account}/data",
             billing=True,
         )
+        _LOGGER.debug("DTEK new portal meter response shape: %s", _response_shape(meter))
         if not isinstance(meter, dict) or meter.get("accountNumber") != account:
             raise DtekResponseError("New DTEK portal meter response does not match the selected account")
         profile = replace(
