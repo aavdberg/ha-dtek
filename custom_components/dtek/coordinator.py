@@ -166,7 +166,7 @@ class DtekDataUpdateCoordinator(DataUpdateCoordinator[DtekState]):
                 if isinstance(err, DtekConnectionError):
                     raise UpdateFailed(f"Cannot connect to DTEK portal: {err}") from err
                 raise UpdateFailed(f"DTEK API error: {err}") from err
-            _LOGGER.warning("DTEK outage data unavailable; cabinet data remains available: %s", err)
+            _LOGGER.warning("DTEK outage data unavailable; cabinet data remains available (%s)", type(err).__name__)
             outage_data_available = False
             flags, events = {}, []
 

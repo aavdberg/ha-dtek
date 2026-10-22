@@ -40,6 +40,7 @@ from .exceptions import (
     DtekAuthError,
     DtekConnectionError,
     DtekCsrfError,
+    DtekError,
     DtekRateLimitError,
     DtekResponseError,
 )
@@ -891,6 +892,8 @@ class DtekApiClient:
         self,
         token: str,
         account: str | None = None,
+        *,
+        strict: bool = False,
     ) -> dict[str, Any]:
         """Fetch customer, place and contract info for an account.
 
@@ -898,6 +901,9 @@ class DtekApiClient:
         ``{"customer": {...}, "place": {...}, "serviceProviders": [...]}`` -- it is
         not a list of objects, so the whole payload is returned for the caller to
         pick fields from.
+
+        Strict mode validates account access during credential replacement,
+        while regular polling retains best-effort metadata behavior.
         """
         url = f"{self._cabinet_base_url}{PATH_CABINET_OBJECTS_INFO}"
         payload: dict[str, Any] = {"token": token}
@@ -912,17 +918,42 @@ class DtekApiClient:
                 timeout=aiohttp.ClientTimeout(total=20),
             ) as resp:
                 if resp.status != 200:
+                    if strict:
+                        if resp.status in (401, 403):
+                            raise DtekAuthError("DTEK cabinet account access was rejected")
+                        if resp.status == 429:
+                            raise DtekRateLimitError("DTEK cabinet account validation was rate limited")
+                        raise DtekConnectionError(f"DTEK cabinet account validation failed (HTTP {resp.status})")
                     return {}
                 data = await resp.json(content_type=None)
+        except DtekError:
+            raise
+        except (aiohttp.ClientError, TimeoutError, ValueError) as err:
+            if strict:
+                if isinstance(err, ValueError):
+                    raise DtekResponseError("DTEK cabinet account validation returned invalid JSON") from None
+                raise DtekConnectionError("DTEK cabinet account validation request failed") from None
+            _LOGGER.debug("Could not fetch cabinet objects info (%s)", type(err).__name__)
+            return {}
         except Exception as err:
-            _LOGGER.debug("Could not fetch cabinet objects info: %s", err)
+            if strict:
+                raise
+            _LOGGER.debug("Could not fetch cabinet objects info (%s)", type(err).__name__)
             return {}
 
         if not isinstance(data, dict):
+            if strict:
+                raise DtekResponseError("DTEK cabinet account validation returned an invalid response")
             return {}
         # Some deployments wrap the payload in a "data" envelope.
         if "customer" not in data and isinstance(data.get("data"), dict):
-            return data["data"]
+            data = data["data"]
+        if strict:
+            customer = data.get("customer")
+            if data.get("status") in ("fail", "error") or not isinstance(customer, dict):
+                raise DtekResponseError("DTEK cabinet account validation was unsuccessful")
+            if _clean_str(customer.get("account")) != account:
+                raise DtekResponseError("DTEK cabinet account validation does not match the selected account")
         return data
 
     async def async_get_cabinet_meters(

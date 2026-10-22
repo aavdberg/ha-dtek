@@ -55,7 +55,7 @@ async def test_cabinet_data_survives_public_portal_failure(
     )
     client.async_get_home_numbers = AsyncMock(return_value=DtekAddressLookupResult(result=True))
     client.async_get_schedule = AsyncMock(return_value=[])
-    error = error_type("public portal unavailable")
+    error = error_type("private_city private_street private_house private_response")
     if failure_stage == "cooldown":
         client.raise_if_portal_cooling_down.side_effect = error
     elif failure_stage == "address":
@@ -83,6 +83,10 @@ async def test_cabinet_data_survives_public_portal_failure(
     assert state.next_outage is None
     assert state.flags == {}
     assert "cabinet data remains available" in caplog.text
+    assert error_type.__name__ in caplog.text
+    assert all(
+        value not in caplog.text for value in ("private_city", "private_street", "private_house", "private_response")
+    )
     if failure_stage == "cooldown":
         client.async_get_home_numbers.assert_not_awaited()
         client.async_get_schedule.assert_not_awaited()

@@ -108,6 +108,9 @@ portal, and verifies access to the existing linked account before saving.
 Only the phone number and password are updated; your account, outage group,
 options, and entry/entity IDs are preserved. Invalid credentials or connection
 errors leave the existing configuration unchanged so you can retry.
+Legacy reauthentication also validates access to the selected account through
+the account-metadata endpoint before saving replacement credentials; normal
+polling still tolerates temporary missing metadata.
 
 ### New Dnipro Personal Cabinet (`my.dtek`)
 
