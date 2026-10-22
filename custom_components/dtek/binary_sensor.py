@@ -111,10 +111,15 @@ class DtekBinarySensor(CoordinatorEntity[DtekDataUpdateCoordinator], BinarySenso
         }
 
     @property
-    def is_on(self) -> bool:
+    def available(self) -> bool:
+        """Require fresh outage data independently of the cabinet."""
+        return super().available and self.coordinator.data is not None and self.coordinator.data.outage_data_available
+
+    @property
+    def is_on(self) -> bool | None:
         """Return True if condition is met."""
-        if self.coordinator.data is None:
-            return False
+        if not self.available:
+            return None
         if self._is_on_fn:
             return bool(self._is_on_fn(self.coordinator.data))
         return self.coordinator.data.power_expected

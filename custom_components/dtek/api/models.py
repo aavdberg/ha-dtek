@@ -95,7 +95,7 @@ class DtekState:
     """Aggregated state for a configured DTEK location."""
 
     group: str
-    power_expected: bool = True
+    power_expected: bool | None = True
     current_outage: DtekOutageEvent | None = None
     next_outage: DtekOutageEvent | None = None
     events: list[DtekOutageEvent] = field(default_factory=list)
@@ -110,3 +110,4 @@ class DtekState:
     address: str | None = None
     object_type: str | None = None
     cabinet_authenticated: bool = False
+    outage_data_available: bool = True
