@@ -355,6 +355,23 @@ class DtekNewPortalClient(DtekApiClient):
         inner = payload.get("data")
         return inner if isinstance(inner, dict) else payload
 
+    async def _legacy_select_account(self, account: str) -> None:
+        """Select an account before reading meters; the endpoint may return no JSON."""
+        status, _, _ = await self._request(
+            "POST",
+            LEGACY.with_path(PATH_CABINET_CHOICE_APART),
+            json_body={
+                "token": self._legacy_token,
+                "account": account,
+                "item": {"account": account},
+            },
+            legacy_authorization="Bearer " + (self._legacy_token or ""),
+        )
+        if status in (401, 403):
+            raise DtekAuthError("DTEK legacy session expired")
+        if status != 200:
+            raise DtekResponseError("DTEK legacy account selection failed")
+
     async def _legacy_profile(self, account: str) -> DtekCabinetProfile:
         """Read selected-account metadata with one bounded legacy renewal."""
         async with self._legacy_lock:
@@ -379,11 +396,7 @@ class DtekNewPortalClient(DtekApiClient):
                     meter_serial = None
                     meter_type = None
                     try:
-                        await self._legacy_api(
-                            PATH_CABINET_CHOICE_APART,
-                            account,
-                            item={"account": account},
-                        )
+                        await self._legacy_select_account(account)
                         meter_data = await self._legacy_api(PATH_CABINET_CHOICE_ACCOUNT, account, site="dnem")
                         meters = meter_data.get("meters")
                         meter = (
