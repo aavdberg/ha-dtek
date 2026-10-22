@@ -376,7 +376,7 @@ async def test_profile_selects_exact_account_and_meter() -> None:
     assert profile.meter_serial == "test_meter"
     assert profile.eic == "test_meter_eic"
     assert profile.group is None
-    assert client._api.call_args_list[1].kwargs["billing"] is True
+    assert client._api.call_args_list[1].args == ("/api/billing-service/api/meters/household/12345/data",)
 
 
 @pytest.mark.asyncio
@@ -538,8 +538,8 @@ async def test_private_session_cleanup_does_not_close_shared_session() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("billing", "expected"), [(False, "test_token"), (True, "Bearer test_token")])
-async def test_request_headers_cookie_csrf_and_redirect_isolation(billing: bool, expected: str) -> None:
+@pytest.mark.parametrize("path", ["/api/test", "/api/billing-service/api/meters/household/12345/data"])
+async def test_request_headers_cookie_csrf_and_redirect_isolation(path: str) -> None:
     client = DtekNewPortalClient(MagicMock())
     session = MagicMock()
     cookie = MagicMock()
@@ -553,9 +553,9 @@ async def test_request_headers_cookie_csrf_and_redirect_isolation(billing: bool,
     session.request.return_value.__aexit__ = AsyncMock(return_value=False)
     client._portal_session = session
     client._x_id_token = "test_token"
-    await client._request("POST", PORTAL / "api/test", token=True, billing=billing)
+    await client._request("POST", PORTAL.with_path(path), token=True)
     kwargs = session.request.call_args.kwargs
-    assert kwargs["headers"]["X-Id-Token"] == expected
+    assert kwargs["headers"]["X-Id-Token"] == "test_token"
     assert kwargs["headers"]["X-CSRF"] == "test csrf"
     assert kwargs["allow_redirects"] is False
 

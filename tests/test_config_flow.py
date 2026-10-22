@@ -9,7 +9,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from custom_components.dtek.api import DtekApiClient, DtekAuthError, DtekConnectionError, DtekError
-from custom_components.dtek.api.models import DtekCabinetProfile, DtekCabinetUser
+from custom_components.dtek.api.models import (
+    DtekAddressLookupResult,
+    DtekCabinetProfile,
+    DtekCabinetUser,
+    DtekHouseInfo,
+)
 from custom_components.dtek.api.new_portal import DtekNewPortalClient
 from custom_components.dtek.config_flow import DtekConfigFlow
 
@@ -46,6 +51,136 @@ def test_config_flow_instantiation() -> None:
     flow = DtekConfigFlow()
     assert flow.VERSION == 1
     assert flow._dso == "dtek-dnem"
+
+
+@pytest.fixture
+def new_account_flow(monkeypatch: pytest.MonkeyPatch) -> tuple[DtekConfigFlow, MagicMock]:
+    flow = DtekConfigFlow()
+    flow.hass = MagicMock()
+    flow._new_accounts = ["12345"]
+    flow._new_data = {"dso": "dtek-dnem", "phone": "0000000000", "password": "test_password", "cabinet_portal": "new"}
+    flow.async_set_unique_id = AsyncMock()
+    flow._abort_if_unique_id_configured = MagicMock()
+    flow.async_show_form = lambda **kwargs: {"type": "form", **kwargs}
+    flow.async_create_entry = lambda **kwargs: {"type": "create_entry", **kwargs}
+    client = MagicMock()
+    client.async_cabinet_authenticate = AsyncMock(
+        return_value=DtekCabinetUser(token="test_token", phone="0000000000", accounts=["12345"])
+    )
+    client.async_get_cabinet_profile = AsyncMock(
+        return_value=DtekCabinetProfile(
+            account="12345",
+            group="GPV1.2",
+            eic="test_eic",
+            city="test_city",
+            street="test_street",
+            house_number="1",
+        )
+    )
+    client.async_get_home_numbers = AsyncMock()
+    client.async_close = AsyncMock()
+    monkeypatch.setattr("custom_components.dtek.config_flow.DtekNewPortalClient", MagicMock(return_value=client))
+    return flow, client
+
+
+@pytest.mark.asyncio
+async def test_new_account_form_does_not_require_group(new_account_flow: tuple[DtekConfigFlow, MagicMock]) -> None:
+    flow, client = new_account_flow
+    result = await flow.async_step_new_account()
+    assert result["data_schema"]({"account": "12345"}) == {"account": "12345"}
+    client.async_cabinet_authenticate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_new_account_detects_and_persists_profile(new_account_flow: tuple[DtekConfigFlow, MagicMock]) -> None:
+    flow, client = new_account_flow
+    result = await flow.async_step_new_account({"account": "12345"})
+    assert result["type"] == "create_entry"
+    assert result["data"] == {
+        **flow._new_data,
+        "account": "12345",
+        "group": "GPV1.2",
+        "eic": "test_eic",
+        "city": "test_city",
+        "street": "test_street",
+        "house_number": "1",
+    }
+    client.async_get_cabinet_profile.assert_awaited_once_with(token="test_token", account="12345")
+    client.async_get_home_numbers.assert_not_awaited()
+    client.async_close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("manual_group", [None, " gpv2.1 "])
+async def test_new_account_requires_confirmed_group_when_unresolved(
+    new_account_flow: tuple[DtekConfigFlow, MagicMock],
+    manual_group: str | None,
+) -> None:
+    flow, client = new_account_flow
+    client.async_get_cabinet_profile.return_value = DtekCabinetProfile(account="12345")
+    user_input = {"account": "12345"}
+    if manual_group is not None:
+        user_input["group"] = manual_group
+    result = await flow.async_step_new_account(user_input)
+    if manual_group is None:
+        assert result["errors"] == {"base": "no_group"}
+    else:
+        assert result["type"] == "create_entry"
+        assert result["data"]["group"] == "GPV2.1"
+    client.async_close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_new_account_uses_address_group(new_account_flow: tuple[DtekConfigFlow, MagicMock]) -> None:
+    flow, client = new_account_flow
+    client.async_get_cabinet_profile.return_value = DtekCabinetProfile(
+        account="12345",
+        city="test_city",
+        street="test_street",
+        house_number="1",
+    )
+    client.async_get_home_numbers.return_value = DtekAddressLookupResult(
+        result=True,
+        houses={"1": DtekHouseInfo(house_num="1", group="GPV3.1")},
+    )
+    result = await flow.async_step_new_account({"account": "12345"})
+    assert result["data"]["group"] == "GPV3.1"
+    client.async_get_home_numbers.assert_awaited_once_with(city="test_city", street="test_street")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changed_after_login", [False, True])
+async def test_new_account_rejects_unknown_account(
+    new_account_flow: tuple[DtekConfigFlow, MagicMock],
+    changed_after_login: bool,
+) -> None:
+    flow, client = new_account_flow
+    if changed_after_login:
+        client.async_cabinet_authenticate.return_value = DtekCabinetUser(token="test_token", phone="0000000000")
+    result = await flow.async_step_new_account({"account": "12345" if changed_after_login else "67890"})
+    assert result["errors"] == {"base": "no_account"}
+    client.async_get_cabinet_profile.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (DtekAuthError("expired"), "invalid_auth"),
+        (DtekConnectionError("offline"), "cannot_connect"),
+        (DtekError("invalid response"), "unknown"),
+    ],
+)
+async def test_new_account_surfaces_errors_and_closes_session(
+    new_account_flow: tuple[DtekConfigFlow, MagicMock],
+    error: DtekError,
+    expected: str,
+) -> None:
+    flow, client = new_account_flow
+    client.async_get_cabinet_profile.side_effect = error
+    result = await flow.async_step_new_account({"account": "12345"})
+    assert result["errors"] == {"base": expected}
+    client.async_close.assert_awaited_once()
 
 
 @pytest.mark.asyncio

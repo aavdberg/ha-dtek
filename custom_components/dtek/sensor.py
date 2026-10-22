@@ -222,10 +222,14 @@ class DtekSensor(CoordinatorEntity[DtekDataUpdateCoordinator], SensorEntity):
 
     @property
     def available(self) -> bool:
-        """Keep cabinet sensors independent of public outage availability."""
+        """Keep known queue and cabinet data independent of public outages."""
         if not super().available or self.coordinator.data is None:
             return False
-        return self.entity_description in CABINET_SENSOR_DESCRIPTIONS or self.coordinator.data.outage_data_available
+        return (
+            self.entity_description.key == "group"
+            or self.entity_description in CABINET_SENSOR_DESCRIPTIONS
+            or self.coordinator.data.outage_data_available
+        )
 
     @property
     def native_value(self) -> datetime | str | float | None:

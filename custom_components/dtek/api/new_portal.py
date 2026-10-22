@@ -19,6 +19,7 @@ from .client import (
     DEFAULT_USER_AGENT,
     DtekApiClient,
     _format_capacity,
+    _response_shape,
     _to_float,
     normalize_group,
     parse_cabinet_address,
@@ -43,63 +44,10 @@ LEGACY_CALLBACK = LEGACY / "auth/callback"
 # The legacy backend performs the code exchange using its first-party verifier.
 LEGACY_CHALLENGE = "T0wiJiK1mBexC-LFD46zLufVr-iPXXPSYDMxrsYp_U8"
 _LOGGER = logging.getLogger(__name__)
-_RESPONSE_SCHEMA_KEYS = frozenset(
-    {
-        "accountNumber",
-        "construction",
-        "data",
-        "installationEic",
-        "meterType",
-        "meters",
-        "serial_number",
-        "serialNum",
-        "serialNumber",
-        "type",
-    }
-)
 
 
 def _text(value: Any) -> str | None:
     return value.strip() or None if isinstance(value, str) else None
-
-
-def _response_shape(value: Any, depth: int = 0) -> dict[str, Any] | str:
-    """Describe a bounded response structure without including data values."""
-    if isinstance(value, dict):
-        keys: dict[str, Any] = {}
-        for index, key in enumerate(sorted(value, key=lambda item: str(item))[:20]):
-            safe_key = key if key in _RESPONSE_SCHEMA_KEYS else f"<other-key-{index}>"
-            keys[safe_key] = _shape_value(value[key], depth)
-        return {"type": "object", "key_count": len(value), "keys": keys}
-    return _shape_value(value, depth)
-
-
-def _shape_value(value: Any, depth: int) -> dict[str, Any] | str:
-    if depth >= 4:
-        return _value_type(value)
-    if isinstance(value, dict):
-        return _response_shape(value, depth + 1)
-    if isinstance(value, list):
-        return {
-            "type": "array",
-            "length": len(value),
-            "items": [_shape_value(item, depth + 1) for item in value[:3]],
-        }
-    return _value_type(value)
-
-
-def _value_type(value: Any) -> str:
-    if value is None:
-        return "null"
-    if isinstance(value, bool):
-        return "boolean"
-    if isinstance(value, str):
-        return "string"
-    if isinstance(value, int):
-        return "integer"
-    if isinstance(value, float):
-        return "number"
-    return type(value).__name__
 
 
 class DtekNewPortalClient(DtekApiClient):
@@ -148,7 +96,6 @@ class DtekNewPortalClient(DtekApiClient):
         json_body: dict[str, Any] | None = None,
         form: dict[str, str] | None = None,
         token: bool = False,
-        billing: bool = False,
         legacy_authorization: str | None = None,
     ) -> tuple[int, Any, URL | None]:
         is_legacy = url.origin() == LEGACY
@@ -177,7 +124,7 @@ class DtekNewPortalClient(DtekApiClient):
             if cookie:
                 headers["X-CSRF"] = unquote(cookie.value)
         if token and self._x_id_token:
-            headers["X-Id-Token"] = ("Bearer " if billing else "") + self._x_id_token
+            headers["X-Id-Token"] = self._x_id_token
         if legacy_authorization:
             headers["Authorization"] = legacy_authorization
         try:
@@ -288,12 +235,12 @@ class DtekNewPortalClient(DtekApiClient):
             primary_account=accounts[0].account if len(accounts) == 1 else None,
         )
 
-    async def _api(self, path: str, *, billing: bool = False, query: dict[str, str | int] | None = None) -> Any:
+    async def _api(self, path: str, *, query: dict[str, str | int] | None = None) -> Any:
         if self._expired:
             raise DtekAuthError("New DTEK portal session expired; please reauthenticate")
         url = PORTAL.with_path(path).with_query(query or {})
         generation = self._generation
-        status, payload, _ = await self._request("GET", url, token=True, billing=billing)
+        status, payload, _ = await self._request("GET", url, token=True)
         if status == 401:
             async with self._auth_lock:
                 if self._expired:
@@ -315,7 +262,7 @@ class DtekNewPortalClient(DtekApiClient):
                         raise
                 elif self._refresh_error is not None:
                     raise self._refresh_error
-            status, payload, _ = await self._request("GET", url, token=True, billing=billing)
+            status, payload, _ = await self._request("GET", url, token=True)
         if status == 401:
             self._expired = True
             raise DtekAuthError("New DTEK portal denied account access after refreshing")
@@ -542,7 +489,6 @@ class DtekNewPortalClient(DtekApiClient):
             raise DtekResponseError("New DTEK portal account identifier is invalid")
         meter = await self._api(
             f"/api/billing-service/api/meters/household/{account}/data",
-            billing=True,
         )
         _LOGGER.debug("DTEK new portal meter response shape: %s", _response_shape(meter))
         if not isinstance(meter, dict) or meter.get("accountNumber") != account:

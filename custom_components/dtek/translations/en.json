@@ -32,7 +32,7 @@
       },
       "new_account": {
         "title": "Choose your account",
-        "description": "Select your account and enter your confirmed outage queue. The new portal does not provide a verified outage queue API.",
+        "description": "Select your account. The outage queue is detected automatically from your profile or registered address. Only enter a confirmed queue if automatic detection fails.",
         "data": {"account": "Account", "group": "Queue / Group"}
       },
       "reauth_confirm": {
