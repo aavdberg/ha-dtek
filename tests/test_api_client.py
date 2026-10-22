@@ -29,6 +29,7 @@ from custom_components.dtek.api.exceptions import (
     DtekConnectionError,
     DtekCsrfError,
     DtekRateLimitError,
+    DtekResponseError,
 )
 from custom_components.dtek.api.models import DtekHouseInfo
 
@@ -463,6 +464,52 @@ async def test_cabinet_objects_info_returns_mapping() -> None:
     info = await client.async_get_cabinet_objects_info("token", "100000000000")
 
     assert info["customer"]["eic"] == "62Z1234567890123"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "error"),
+    [(401, DtekAuthError), (403, DtekAuthError), (429, DtekRateLimitError), (503, DtekConnectionError)],
+)
+async def test_strict_cabinet_validation_propagates_http_failures(status: int, error: type[Exception]) -> None:
+    session = MagicMock(spec=aiohttp.ClientSession)
+    session.post.return_value = MockResponse(status=status)
+    client = DtekApiClient(session=session)
+    with pytest.raises(error):
+        await client.async_get_cabinet_objects_info("test_token", "12345", strict=True)
+    assert await client.async_get_cabinet_objects_info("test_token", "12345") == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("wrapped", [False, True])
+async def test_strict_cabinet_validation_accepts_matching_account(wrapped: bool) -> None:
+    data = {"customer": {"account": "12345"}, "status": "success"}
+    session = MagicMock(spec=aiohttp.ClientSession)
+    session.post.return_value = MockResponse(status=200, json_data={"data": data} if wrapped else data)
+    info = await DtekApiClient(session=session).async_get_cabinet_objects_info("test_token", "12345", strict=True)
+    assert info == data
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "data",
+    [
+        None,
+        [],
+        {},
+        {"status": "fail"},
+        {"customer": {"account": "67890"}},
+        {"status": "fail", "data": {"customer": {"account": "12345"}}},
+        {"status": "error", "data": {"customer": {"account": "12345"}}},
+        {"data": {"status": "fail", "customer": {"account": "12345"}}},
+        {"data": {"status": "error", "customer": {"account": "12345"}}},
+    ],
+)
+async def test_strict_cabinet_validation_rejects_invalid_account_response(data: Any) -> None:
+    session = MagicMock(spec=aiohttp.ClientSession)
+    session.post.return_value = MockResponse(status=200, json_data=data)
+    with pytest.raises(DtekResponseError):
+        await DtekApiClient(session=session).async_get_cabinet_objects_info("test_token", "12345", strict=True)
 
 
 @pytest.mark.asyncio

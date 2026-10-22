@@ -268,6 +268,8 @@ class DtekConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 if account not in user.accounts:
                     errors["base"] = "no_account"
                 else:
+                    if portal == CABINET_PORTAL_LEGACY:
+                        await client.async_get_cabinet_objects_info(token=user.token, account=account, strict=True)
                     await client.async_get_cabinet_profile(
                         token=user.token, account=account, site=cabinet_site_for_dso(dso)
                     )

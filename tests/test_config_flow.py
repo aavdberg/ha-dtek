@@ -336,9 +336,13 @@ def reauth_flow(monkeypatch: pytest.MonkeyPatch) -> tuple[DtekConfigFlow, MagicM
             return_value=DtekCabinetUser(token="test_token", phone="0000000000", accounts=["12345"])
         )
         client.async_get_cabinet_profile = AsyncMock(return_value=DtekCabinetProfile(account="12345"))
+        client.async_get_cabinet_objects_info = AsyncMock(return_value={"customer": {"account": "12345"}})
         monkeypatch.setattr(client_class, "async_cabinet_authenticate", client.async_cabinet_authenticate)
         monkeypatch.setattr(client_class, "async_get_cabinet_profile", client.async_get_cabinet_profile)
         clients[portal] = client
+    monkeypatch.setattr(
+        DtekApiClient, "async_get_cabinet_objects_info", clients["legacy"].async_get_cabinet_objects_info
+    )
     clients["new"].async_close = AsyncMock()
     monkeypatch.setattr(DtekNewPortalClient, "async_close", clients["new"].async_close)
 
@@ -410,6 +414,14 @@ async def test_reauth_updates_only_credentials_for_existing_dso(
     assert entry.data == original_data
     assert entry.options == original_options
     assert clients["new"].async_close.await_count == (1 if portal == "new" else 0)
+    if portal == "legacy":
+        clients["legacy"].async_get_cabinet_objects_info.assert_awaited_once_with(
+            token="test_token",
+            account="12345",
+            strict=True,
+        )
+    else:
+        clients["legacy"].async_get_cabinet_objects_info.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -440,6 +452,47 @@ async def test_reauth_failures_preserve_configuration(
     assert entry.data == original_data
     assert entry.options == original_options
     assert clients["new"].async_close.await_count == (1 if portal == "new" else 0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["timeout", "503", "401", "invalid_json", "wrong_account"])
+async def test_legacy_reauth_http_validation_failure_preserves_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    entry = MagicMock()
+    entry.data = {"dso": "dtek-dnem", "account": "12345", "phone": "0000000000", "password": "old_test_password"}
+    entry.options = {}
+    original = entry.data.copy()
+    flow = DtekConfigFlow()
+    flow.hass = MagicMock()
+    flow._get_reauth_entry = MagicMock(return_value=entry)
+    flow.async_show_form = lambda **kwargs: {"type": "form", **kwargs}
+    flow.async_update_reload_and_abort = MagicMock()
+    session = MagicMock()
+    response = AsyncMock()
+    response.status = int(failure) if failure in ("503", "401") else 200
+    response.json.return_value = {"customer": {"account": "67890"}}
+    if failure == "invalid_json":
+        response.json.side_effect = ValueError("private response data")
+    session.post.return_value.__aenter__ = AsyncMock(return_value=response)
+    session.post.return_value.__aexit__ = AsyncMock(return_value=False)
+    if failure == "timeout":
+        session.post.return_value.__aenter__.side_effect = TimeoutError("private address")
+    monkeypatch.setattr("custom_components.dtek.config_flow.async_get_clientsession", lambda hass: session)
+    monkeypatch.setattr(
+        DtekApiClient,
+        "async_cabinet_authenticate",
+        AsyncMock(
+            return_value=DtekCabinetUser(token="test_token", phone="1111111111", accounts=["12345"]),
+        ),
+    )
+    result = await flow.async_step_reauth_confirm({"phone": "1111111111", "password": "new_test_password"})
+    expected = "invalid_auth" if failure == "401" else "cannot_connect" if failure in ("timeout", "503") else "unknown"
+    assert result["errors"] == {"base": expected}
+    flow.async_update_reload_and_abort.assert_not_called()
+    assert entry.data == original
+    session.post.assert_called_once()
 
 
 @pytest.mark.asyncio
