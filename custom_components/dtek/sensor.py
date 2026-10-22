@@ -125,6 +125,7 @@ CABINET_SENSOR_DESCRIPTIONS: tuple[DtekSensorEntityDescription, ...] = (
 # sensors are deliberately NOT treated this way: a missing value may simply be a
 # temporarily failing endpoint, and discarding the entity would lose its history.
 OBSOLETE_SENSOR_KEYS: frozenset[str] = frozenset({"day_reading", "night_reading"})
+ALWAYS_ADD_CABINET_SENSOR_KEYS: frozenset[str] = frozenset({"meter_serial", "meter_type"})
 
 
 @callback
@@ -165,10 +166,13 @@ async def async_setup_entry(
     if not entry.runtime_data.cabinet_enabled:
         return
 
-    # A cabinet field that is absent right now may just be a temporarily failing
-    # endpoint, so entities are added the first time a value actually appears
-    # rather than being decided once from the initial snapshot.
-    known_keys: set[str] = set()
+    # Keep meter entities registered if the initial cabinet response is
+    # incomplete, so existing entity IDs can recover when DTEK returns values.
+    always_add = [
+        description for description in CABINET_SENSOR_DESCRIPTIONS if description.key in ALWAYS_ADD_CABINET_SENSOR_KEYS
+    ]
+    async_add_entities([_build(description) for description in always_add])
+    known_keys = set(ALWAYS_ADD_CABINET_SENSOR_KEYS)
 
     @callback
     def _async_add_available_cabinet_sensors() -> None:

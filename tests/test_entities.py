@@ -299,7 +299,7 @@ async def test_setup_entry_removes_only_obsolete_sensors() -> None:
 
 @pytest.mark.asyncio
 async def test_cabinet_sensor_added_when_value_appears_later() -> None:
-    """A field that only becomes available later still gets an entity."""
+    """Meter sensors are registered immediately; other fields are added when available."""
     from custom_components.dtek.coordinator import DtekDataUpdateCoordinator
     from custom_components.dtek.sensor import async_setup_entry
 
@@ -312,7 +312,8 @@ async def test_cabinet_sensor_added_when_value_appears_later() -> None:
     added: list[Any] = []
     await async_setup_entry(hass, _make_entry(coordinator), lambda e: added.extend(e))
 
-    assert {s.entity_description.key for s in added} == {d.key for d in SENSOR_DESCRIPTIONS}
+    initial_keys = {s.entity_description.key for s in added}
+    assert initial_keys == {d.key for d in SENSOR_DESCRIPTIONS} | {"meter_serial", "meter_type"}
 
     # The cabinet endpoint recovers on a later refresh.
     coordinator.data = DtekState(group="GPV1.2", balance=-12.5, customer_name="Тестенко Т.Т.")
@@ -321,11 +322,15 @@ async def test_cabinet_sensor_added_when_value_appears_later() -> None:
     created = {sensor.entity_description.key for sensor in added}
     assert "balance" in created
     assert "customer_name" in created
+    assert "meter_serial" in created
+    assert "meter_type" in created
 
     # A further refresh must not duplicate the entities.
     coordinator.async_notify_listeners()
     keys = [sensor.entity_description.key for sensor in added]
     assert len(keys) == len(set(keys))
+    assert keys.count("meter_serial") == 1
+    assert keys.count("meter_type") == 1
 
 
 @pytest.mark.asyncio
