@@ -138,6 +138,11 @@
       "outages": {
         "name": "Outage schedule"
       }
+    },
+    "button": {
+      "refresh_data": {
+        "name": "Refresh data"
+      }
     }
   }
 }
