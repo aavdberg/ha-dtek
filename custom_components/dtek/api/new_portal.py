@@ -44,10 +44,63 @@ LEGACY_CALLBACK = LEGACY / "auth/callback"
 # The legacy backend performs the code exchange using its first-party verifier.
 LEGACY_CHALLENGE = "T0wiJiK1mBexC-LFD46zLufVr-iPXXPSYDMxrsYp_U8"
 _LOGGER = logging.getLogger(__name__)
+_RESPONSE_SCHEMA_KEYS = frozenset(
+    {
+        "accountNumber",
+        "construction",
+        "data",
+        "installationEic",
+        "meterType",
+        "meters",
+        "serial_number",
+        "serialNum",
+        "serialNumber",
+        "type",
+    }
+)
 
 
 def _text(value: Any) -> str | None:
     return value.strip() or None if isinstance(value, str) else None
+
+
+def _response_shape(value: Any, depth: int = 0) -> dict[str, Any] | str:
+    """Describe a bounded response structure without including data values."""
+    if isinstance(value, dict):
+        keys: dict[str, Any] = {}
+        for index, key in enumerate(sorted(value, key=lambda item: str(item))[:20]):
+            safe_key = key if key in _RESPONSE_SCHEMA_KEYS else f"<other-key-{index}>"
+            keys[safe_key] = _shape_value(value[key], depth)
+        return {"type": "object", "key_count": len(value), "keys": keys}
+    return _shape_value(value, depth)
+
+
+def _shape_value(value: Any, depth: int) -> dict[str, Any] | str:
+    if depth >= 4:
+        return _value_type(value)
+    if isinstance(value, dict):
+        return _response_shape(value, depth + 1)
+    if isinstance(value, list):
+        return {
+            "type": "array",
+            "length": len(value),
+            "items": [_shape_value(item, depth + 1) for item in value[:3]],
+        }
+    return _value_type(value)
+
+
+def _value_type(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    return type(value).__name__
 
 
 class DtekNewPortalClient(DtekApiClient):
