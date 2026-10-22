@@ -43,6 +43,7 @@ def test_response_shape_reports_structure_without_private_values() -> None:
                 }
             ],
             "private identifier": "private_account_value",
+            "meter_registry": {"synthetic_private_serial_123": {"type": "private_nested_type"}},
         }
     )
     serialized = json.dumps(shape)
@@ -50,10 +51,17 @@ def test_response_shape_reports_structure_without_private_values() -> None:
     assert shape["keys"]["meters"]["length"] == 1
     assert shape["keys"]["meters"]["items"][0]["keys"]["serialNumber"] == "string"
     assert shape["keys"]["meters"]["items"][0]["keys"]["type"] == "string"
-    assert "<nonstandard-key>" in shape["keys"]
+    assert any(key.startswith("<other-key-") for key in shape["keys"])
     assert all(
         value not in serialized
-        for value in ("private_serial_value", "private_meter_type", "private_token_value", "private_account_value")
+        for value in (
+            "private_serial_value",
+            "private_meter_type",
+            "private_token_value",
+            "private_account_value",
+            "private_nested_type",
+            "synthetic_private_serial_123",
+        )
     )
 
 

@@ -43,6 +43,20 @@ LEGACY_CALLBACK = LEGACY / "auth/callback"
 # The legacy backend performs the code exchange using its first-party verifier.
 LEGACY_CHALLENGE = "T0wiJiK1mBexC-LFD46zLufVr-iPXXPSYDMxrsYp_U8"
 _LOGGER = logging.getLogger(__name__)
+_RESPONSE_SCHEMA_KEYS = frozenset(
+    {
+        "accountNumber",
+        "construction",
+        "data",
+        "installationEic",
+        "meterType",
+        "meters",
+        "serial_number",
+        "serialNum",
+        "serialNumber",
+        "type",
+    }
+)
 
 
 def _text(value: Any) -> str | None:
@@ -53,17 +67,8 @@ def _response_shape(value: Any, depth: int = 0) -> dict[str, Any] | str:
     """Describe a bounded response structure without including data values."""
     if isinstance(value, dict):
         keys: dict[str, Any] = {}
-        for key in sorted(value, key=lambda item: str(item))[:20]:
-            safe_key = (
-                key
-                if isinstance(key, str)
-                and key.isascii()
-                and key
-                and (key[0].isalpha() or key[0] == "_")
-                and all(char.isalnum() or char == "_" for char in key)
-                and len(key) <= 64
-                else "<nonstandard-key>"
-            )
+        for index, key in enumerate(sorted(value, key=lambda item: str(item))[:20]):
+            safe_key = key if key in _RESPONSE_SCHEMA_KEYS else f"<other-key-{index}>"
             keys[safe_key] = _shape_value(value[key], depth)
         return {"type": "object", "key_count": len(value), "keys": keys}
     return _shape_value(value, depth)
