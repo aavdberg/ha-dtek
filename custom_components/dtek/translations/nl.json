@@ -32,7 +32,7 @@
       },
       "new_account": {
         "title": "Kies je account",
-        "description": "Selecteer je account en vul je bevestigde afschakelgroep in. Een API voor de groep is in het nieuwe portaal nog niet bevestigd.",
+        "description": "Selecteer je account. De afschakelgroep wordt automatisch uit je profiel of geregistreerde adres opgehaald. Vul alleen een bevestigde groep in als automatische detectie mislukt.",
         "data": {"account": "Account", "group": "Groep / Queue"}
       },
       "reauth_confirm": {

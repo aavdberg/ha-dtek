@@ -122,8 +122,11 @@ Your entry and entity IDs are preserved; do not delete the integration to switch
 After saving, the entry reloads and authenticates using the selected portal.
 
 For a new entry, select **New Personal Cabinet (my.dtek) — Dnipro**, sign in,
-select your account explicitly and enter your confirmed outage group. No queue
-is guessed from an account number. Other DSOs continue to use the legacy flow.
+select your account explicitly. The outage group is discovered from the linked
+cabinet profile or registered address. The group field is optional; enter a
+confirmed group only if automatic detection fails. No queue is guessed from an
+account number. The discovered EIC and address are saved with the entry.
+Other DSOs continue to use the legacy flow.
 
 The new client uses an isolated, in-memory cookie session, locally generated
 PKCE and validated authorization state. It renews an expired OAuth session and
@@ -134,7 +137,9 @@ Required password/phone changes must be completed on the DTEK website first.
 This uses the portal's first-party web protocol, not an officially registered
 third-party OAuth client or a supported external HA callback.
 
-Verified new-portal metadata includes registered address and EIC. Meter
+Verified new-portal metadata includes registered address, EIC, meter serial
+and type. These API requests use the unmodified `X-Id-Token` header; adding an
+authorization scheme prefix causes the meter endpoint to reject access. Meter
 serial/type are fetched from the linked legacy cabinet's meter endpoints, with
 the new-portal meter response retained as a fallback. The integration also
 follows DTEK's first-party authorization handoff to obtain a separate session
@@ -143,6 +148,8 @@ bearer token or require another password. Legacy requests verify the selected
 account and supplement the profile with the queue group, customer name,
 contracted capacity and balance when provided.
 The verified queue can update the manually entered group after setup.
+The known queue remains visible if public outage requests are temporarily
+unavailable; outage-dependent entities still become unavailable.
 
 The legacy session stays in memory, is renewed once when rejected, and is
 disposed of with the new session. A legacy-source failure is logged without

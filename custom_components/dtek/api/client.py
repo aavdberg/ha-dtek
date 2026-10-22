@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
 import random
 import re
@@ -51,6 +52,88 @@ from .models import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+_RESPONSE_SCHEMA_KEYS = frozenset(
+    {
+        "account",
+        "accountNumber",
+        "code",
+        "construction",
+        "data",
+        "devices",
+        "entity",
+        "error",
+        "files",
+        "id",
+        "installationEic",
+        "items",
+        "method",
+        "message",
+        "meterType",
+        "meters",
+        "payload",
+        "post",
+        "request",
+        "response",
+        "result",
+        "serial_number",
+        "serialNum",
+        "serialNumber",
+        "site",
+        "status",
+        "success",
+        "token",
+        "type",
+        "value",
+    }
+)
+
+
+def _response_shape(value: Any, depth: int = 0) -> dict[str, Any] | str:
+    """Describe a bounded response structure without including data values."""
+    if isinstance(value, dict):
+        keys: dict[str, Any] = {}
+        for index, key in enumerate(sorted(value, key=lambda item: str(item))[:20]):
+            safe_key = key if key in _RESPONSE_SCHEMA_KEYS else f"<other-key-{index}>"
+            keys[safe_key] = _shape_value(value[key], depth)
+        return {"type": "object", "key_count": len(value), "keys": keys}
+    return _shape_value(value, depth)
+
+
+def _shape_value(value: Any, depth: int) -> dict[str, Any] | str:
+    if depth >= 4:
+        return _value_type(value)
+    if isinstance(value, dict):
+        return _response_shape(value, depth + 1)
+    if isinstance(value, list):
+        return {
+            "type": "array",
+            "length": len(value),
+            "items": [_shape_value(item, depth + 1) for item in value[:3]],
+        }
+    if isinstance(value, str) and len(value) <= 8192:
+        try:
+            parsed = json.loads(value)
+        except (json.JSONDecodeError, RecursionError):
+            pass
+        else:
+            if not isinstance(parsed, str):
+                return {"type": "json-string", "content": _shape_value(parsed, depth + 1)}
+    return _value_type(value)
+
+
+def _value_type(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    return type(value).__name__
+
 
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
@@ -875,6 +958,7 @@ class DtekApiClient:
                 if resp.status != 200:
                     return []
                 data = await resp.json(content_type=None)
+                _LOGGER.debug("DTEK legacy meter response shape: %s", _response_shape(data))
         except Exception as err:
             _LOGGER.debug("Could not fetch cabinet meters: %s", err)
             return []

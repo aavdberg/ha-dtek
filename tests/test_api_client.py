@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -15,6 +16,7 @@ from custom_components.dtek.api.client import (
     MAX_RETRIES,
     PORTAL_BLOCK_COOLDOWN_SECONDS,
     DtekApiClient,
+    _response_shape,
     ensure_dtek_timezone,
     find_house_info,
     normalize_house_number,
@@ -498,8 +500,9 @@ async def test_cabinet_group_normalises_cyrillic() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cabinet_meters_extracted_from_choice_account() -> None:
+async def test_cabinet_meters_extracted_from_choice_account(caplog: pytest.LogCaptureFixture) -> None:
     """Meter details come from the account selection endpoint."""
+    caplog.set_level(logging.DEBUG, logger="custom_components.dtek.api.client")
     session = MagicMock(spec=aiohttp.ClientSession)
     responses = [
         MockResponse(status=200, json_data={"status": "success"}),
@@ -508,10 +511,11 @@ async def test_cabinet_meters_extracted_from_choice_account() -> None:
             json_data={
                 "meters": [
                     {
-                        "type": "GAMA",
-                        "construction": "G3M 144.230",
-                        "serialNumber": "_04860803",
-                    }
+                        "type": "private_meter_type",
+                        "construction": "private_construction",
+                        "serialNumber": "private_serial_value",
+                        "private_serial_registry_key": "private_value",
+                    },
                 ]
             },
         ),
@@ -521,7 +525,46 @@ async def test_cabinet_meters_extracted_from_choice_account() -> None:
     client = DtekApiClient(session=session)
     meters = await client.async_get_cabinet_meters("token", "123")
 
-    assert meters[0]["serialNumber"] == "_04860803"
+    assert meters[0]["serialNumber"] == "private_serial_value"
+    assert "DTEK legacy meter response shape" in caplog.text
+    assert "serialNumber" in caplog.text
+    assert "private_serial_registry_key" not in caplog.text
+    assert "private_serial_value" not in caplog.text
+    assert "private_meter_type" not in caplog.text
+    assert "private_construction" not in caplog.text
+
+
+def test_response_shape_describes_json_strings_without_private_values() -> None:
+    shape = _response_shape(
+        {
+            "data": '{"meters":[{"serialNumber":"private_serial_value","type":"private_meter_type"}]}',
+            "message": "private_error_message",
+        }
+    )
+    serialized = str(shape)
+
+    assert shape["keys"]["data"]["content"]["keys"]["meters"]["length"] == 1
+    assert "serialNumber" in serialized
+    assert all(
+        value not in serialized for value in ("private_serial_value", "private_meter_type", "private_error_message")
+    )
+
+
+def test_response_shape_bounds_nested_json_strings() -> None:
+    value = "[" * 50 + "0" + "]" * 50
+    shape = _response_shape(value)
+
+    assert isinstance(shape, dict)
+    assert shape["type"] == "json-string"
+    assert len(str(shape)) < 500
+
+
+def test_response_shape_handles_json_recursion_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    def reject_deep_json(value: str) -> None:
+        raise RecursionError
+
+    monkeypatch.setattr("custom_components.dtek.api.client.json.loads", reject_deep_json)
+    assert _response_shape("[0]") == "string"
 
 
 @pytest.mark.asyncio

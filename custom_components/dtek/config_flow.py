@@ -14,8 +14,11 @@ from .api import (
     DtekAddressNotFoundError,
     DtekApiClient,
     DtekAuthError,
+    DtekCabinetProfile,
     DtekConnectionError,
+    DtekCsrfError,
     DtekError,
+    DtekRateLimitError,
     find_house_info,
     normalize_house_number,
 )
@@ -158,24 +161,79 @@ class DtekConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         if user_input is not None:
             account = user_input[CONF_ACCOUNT]
-            group = user_input[CONF_GROUP].strip().upper()
+            group = user_input.get(CONF_GROUP, "").strip().upper()
             if account not in self._new_accounts:
                 errors["base"] = "no_account"
-            elif not group:
-                errors["base"] = "no_group"
             else:
-                await self.async_set_unique_id(f"{self._dso}_cabinet_{account}".lower())
-                self._abort_if_unique_id_configured()
-                return self.async_create_entry(
-                    title=f"DTEK Account {account}",
-                    data={**self._new_data, CONF_ACCOUNT: account, CONF_GROUP: group},
+                client = DtekNewPortalClient(
+                    session=async_get_clientsession(self.hass), base_url=SUPPORTED_DSOS[self._dso]["base_url"]
                 )
+                try:
+                    user = await client.async_cabinet_authenticate(
+                        phone=self._new_data[CONF_PHONE], password=self._new_data[CONF_PASSWORD], site="dnem"
+                    )
+                    if account not in user.accounts:
+                        errors["base"] = "no_account"
+                    else:
+                        profile: DtekCabinetProfile | None = None
+                        try:
+                            profile = await client.async_get_cabinet_profile(token=user.token, account=account)
+                        except (DtekConnectionError, DtekRateLimitError) as err:
+                            _LOGGER.warning(
+                                "DTEK setup metadata unavailable (%s); manual queue required", type(err).__name__
+                            )
+                        if profile:
+                            group = profile.group or group
+                            if not group and profile.city and profile.street and profile.house_number:
+                                try:
+                                    lookup = await client.async_get_home_numbers(
+                                        city=profile.city, street=profile.street
+                                    )
+                                except (
+                                    DtekAddressNotFoundError,
+                                    DtekConnectionError,
+                                    DtekCsrfError,
+                                    DtekRateLimitError,
+                                ) as err:
+                                    _LOGGER.warning(
+                                        "DTEK setup address lookup unavailable (%s); manual queue required",
+                                        type(err).__name__,
+                                    )
+                                else:
+                                    house = find_house_info(lookup.houses, profile.house_number)
+                                    if house is not None:
+                                        group = house.group
+                        if not group:
+                            errors["base"] = "no_group"
+                        else:
+                            await self.async_set_unique_id(f"{self._dso}_cabinet_{account}".lower())
+                            self._abort_if_unique_id_configured()
+                            return self.async_create_entry(
+                                title=f"DTEK Account {account}",
+                                data={
+                                    **self._new_data,
+                                    CONF_ACCOUNT: account,
+                                    CONF_GROUP: group,
+                                    CONF_EIC: profile.eic if profile else None,
+                                    CONF_CITY: profile.city if profile else None,
+                                    CONF_STREET: profile.street if profile else None,
+                                    CONF_HOUSE_NUMBER: profile.house_number if profile else None,
+                                },
+                            )
+                except DtekAuthError:
+                    errors["base"] = "invalid_auth"
+                except DtekConnectionError:
+                    errors["base"] = "cannot_connect"
+                except DtekError:
+                    errors["base"] = "unknown"
+                finally:
+                    await client.async_close()
         return self.async_show_form(
             step_id="new_account",
             data_schema=vol.Schema(
                 {
                     vol.Required(CONF_ACCOUNT): vol.In(self._new_accounts),
-                    vol.Required(CONF_GROUP): str,
+                    vol.Optional(CONF_GROUP): str,
                 }
             ),
             errors=errors,
